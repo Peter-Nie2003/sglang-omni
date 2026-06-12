@@ -1055,6 +1055,10 @@ def test_cached_reference_encoder_data_uri_duration_gate():
     assert len(enc._inflight) == 0
 
 
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="needs CUDA: post1 multinomial_with_seed is a Triton kernel (no CPU backend)",
+)
 def test_branchless_sampler_matches_eager_sampler():
     """The CUDA-graphable sampler must reproduce the eager path exactly."""
     pytest.importorskip("sglang")
@@ -1065,12 +1069,12 @@ def test_branchless_sampler_matches_eager_sampler():
 
     torch.manual_seed(7)
     rows, vocab = 6, 64
-    logits = torch.randn(rows, vocab, dtype=torch.float32) * 3
-    temperature = torch.tensor([1.7, 1.0, 0.5, 1.7, 0.0, 1.7])
-    top_p = torch.tensor([0.8, 1.0, 0.9, 0.8, 0.8, 0.8])
-    top_k = torch.tensor([25, 50, 8, 64, 25, 1], dtype=torch.long)
-    seeds = torch.arange(rows, dtype=torch.long) * 1234567
-    positions = torch.arange(rows, dtype=torch.long) * 13
+    logits = torch.randn(rows, vocab, dtype=torch.float32, device="cuda") * 3
+    temperature = torch.tensor([1.7, 1.0, 0.5, 1.7, 0.0, 1.7], device="cuda")
+    top_p = torch.tensor([0.8, 1.0, 0.9, 0.8, 0.8, 0.8], device="cuda")
+    top_k = torch.tensor([25, 50, 8, 64, 25, 1], dtype=torch.long, device="cuda")
+    seeds = torch.arange(rows, dtype=torch.long, device="cuda") * 1234567
+    positions = torch.arange(rows, dtype=torch.long, device="cuda") * 13
 
     eager = MossTTSModelRunner._sample_tokens(
         logits.clone(),

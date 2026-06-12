@@ -119,8 +119,7 @@ def create_preprocessing_executor(
     """
     checkpoint_dir = resolve_checkpoint(model_path)
 
-    # Higgs ckpt tokenizer_config.json uses transformers v5 metadata and crashes
-    # transformers<5's from_pretrained; load tokenizer.json directly to avoid it.
+    # Note:(Chenchen Hong) Load tokenizer.json directly to avoid checkpoint metadata drift.
     raw = Tokenizer.from_file(os.path.join(checkpoint_dir, "tokenizer.json"))
     tokenizer = PreTrainedTokenizerFast(tokenizer_object=raw)
     adapter = HiggsTokenizerAdapter(tokenizer)
