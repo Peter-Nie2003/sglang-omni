@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from typing import Any
 
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
 
 from sglang_omni.models.qwen3_omni.config import MIN_PARTIAL_START_CHUNKS
+from sglang_omni.profiler import step_timing
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 logger = logging.getLogger(__name__)
@@ -108,11 +110,21 @@ class QwenTalkerScheduler(OmniScheduler):
         return True
 
     def get_next_batch_to_run(self) -> Any | None:
+        started = time.perf_counter() if step_timing.recording() else None
         batch = _Upstream.get_next_batch_to_run(self)
+        deferred = False
         if batch is not None and not self._is_batch_ready_to_run(batch):
             self._rollback_decode_prep_after_skip(batch)
-            return None
-        return batch
+            deferred = True
+        if started is not None and batch is not None:
+            step_timing.emit_span(
+                "talker_batch_prep",
+                time.perf_counter() - started,
+                deferred=deferred,
+                is_decode=bool(batch.forward_mode.is_decode()),
+                batch_size=len(batch.reqs),
+            )
+        return None if deferred else batch
 
     def _rollback_decode_prep_after_skip(self, batch: Any) -> None:
         # Note(Chenchen Hong, Xuesong): This is talker-only. It does not fully

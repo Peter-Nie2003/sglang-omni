@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.profiler import step_timing
 from sglang_omni.scheduling.messages import OutgoingMessage
 
 
@@ -60,8 +62,13 @@ class QwenTalkerModelRunner(ModelRunner):
                 "Talker decode reached model runner without ready feedback/text input"
             )
 
+        timing = step_timing.active()
         self.model.prepare_decode_buffers(requests)
+        if timing is not None:
+            timing.mark("before_decode.prepare_buffers")
         self._write_feedback_buffers(requests)
+        if timing is not None:
+            timing.mark("before_decode.write_feedback")
 
     def post_prefill(
         self,
@@ -83,7 +90,14 @@ class QwenTalkerModelRunner(ModelRunner):
         talker_hidden = result.logits_output.hidden_states
         if isinstance(talker_hidden, torch.Tensor) and talker_hidden.ndim == 2:
             talker_hidden = talker_hidden.unsqueeze(1)
+        started = time.perf_counter() if step_timing.recording() else None
         self.model.code_predictor_forward(layer0_codes, talker_hidden)
+        if started is not None:
+            step_timing.emit_span(
+                "talker_first_frame_predictor",
+                time.perf_counter() - started,
+                batch_size=len(requests),
+            )
         schedule_batch.output_ids = result.next_token_ids
         self._emit_code_chunks_and_feedback(
             schedule_batch=schedule_batch,

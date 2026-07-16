@@ -26,6 +26,8 @@ from sglang_omni.models.qwen3_omni.hf_config import (
 from sglang_omni.models.qwen3_omni.quantization import (
     convert_fp8_weight_scale_inv_for_sglang,
 )
+from sglang_omni.profiler.event_recorder import emit as _emit_profiler_event
+from sglang_omni.profiler.event_recorder import get_recorder as _get_profiler_recorder
 from sglang_omni.sampling.seed import (
     SAMPLING_SEED_MASK,
     derive_sampling_seed,
@@ -1354,6 +1356,21 @@ class Qwen3OmniTalker(nn.Module):
             if graph_result is not None:
                 return graph_result
 
+        # During outer-graph capture the eager body is recorded on purpose;
+        # only an eager run outside capture signals a missing predictor graph.
+        if (
+            seq_len == 1
+            and _get_profiler_recorder().is_active()
+            and not (
+                torch.cuda.is_available() and torch.cuda.is_current_stream_capturing()
+            )
+        ):
+            _emit_profiler_event(
+                request_id="__step__",
+                stage=None,
+                event_name="predictor_eager_fallback",
+                metadata={"batch_size": int(batch_size)},
+            )
         return self._code_predictor_forward_incremental_eager(
             layer0_codes=layer0_codes,
             talker_hidden=talker_hidden,
@@ -1433,6 +1450,15 @@ class Qwen3OmniTalker(nn.Module):
                     bucket_size,
                     code_dtype,
                     exc_info=True,
+                )
+                _emit_profiler_event(
+                    request_id="__step__",
+                    stage=None,
+                    event_name="predictor_graph_capture_failed",
+                    metadata={
+                        "bucket_size": int(bucket_size),
+                        "dtype": str(code_dtype),
+                    },
                 )
                 return None
             self._predictor_decode_graphs[key] = graph

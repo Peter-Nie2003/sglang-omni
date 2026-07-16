@@ -12,6 +12,7 @@ from typing import Any
 
 import torch
 
+from sglang_omni.profiler import step_timing
 from sglang_omni.sampling.seed import (
     SAMPLING_SEED_MASK,
     derive_sampling_seed,
@@ -138,10 +139,14 @@ class ModelRunner:
         ``_finalize``) that ``execute_launch`` + ``execute_resolve`` also use,
         in the same order. Async decode splits this at the post-decode boundary.
         """
+        timing = step_timing.begin()
         built = self._build_forward_batch(scheduler_output)
         if built is None:
+            step_timing.discard()
             return ModelRunnerOutput(outputs={}, req_ids=[], req_id_to_index={})
         forward_batch, schedule_batch, model_worker_batch, is_prefill = built
+        if timing is not None:
+            timing.mark("build_batch")
         batch_result = self._prepare_and_forward(
             forward_batch, schedule_batch, scheduler_output.requests, is_prefill
         )
@@ -149,17 +154,30 @@ class ModelRunner:
             self.post_prefill(
                 batch_result, forward_batch, schedule_batch, scheduler_output.requests
             )
+            if timing is not None:
+                timing.mark("post_prefill")
         else:
             self.post_decode(
                 batch_result, forward_batch, schedule_batch, scheduler_output.requests
             )
-        return self._finalize(
+            if timing is not None:
+                timing.mark("post_decode")
+        output = self._finalize(
             batch_result,
             forward_batch,
             schedule_batch,
             model_worker_batch,
             scheduler_output,
         )
+        if timing is not None:
+            timing.mark("finalize")
+            timing.flag(
+                is_prefill=is_prefill,
+                batch_size=len(scheduler_output.requests),
+                can_run_cuda_graph=bool(batch_result.can_run_cuda_graph),
+            )
+            step_timing.finish(timing, "model_step")
+        return output
 
     def execute_launch(self, scheduler_output: Any) -> "_PendingStep | None":
         """Enqueue a decode step's forward + on-GPU sample, call
@@ -177,6 +195,9 @@ class ModelRunner:
         scheduling has two steps momentarily in flight: the just-launched step
         N and the not-yet-resolved step N-1.
         """
+        # A failed execute() can leave its collector behind; without this,
+        # launch-path marks would land on a step event that never emits.
+        step_timing.discard()
         built = self._build_forward_batch(scheduler_output)
         if built is None:
             return None
@@ -303,8 +324,11 @@ class ModelRunner:
     ):
         """Prepare hook → standard forward (if not custom) → sample-before-post
         block. Returns ``batch_result``."""
+        timing = step_timing.active()
         if is_prefill:
             self.before_prefill(forward_batch, schedule_batch, requests)
+            if timing is not None:
+                timing.mark("before_prefill")
             batch_result = self.custom_prefill_forward(
                 forward_batch, schedule_batch, requests
             )
@@ -315,11 +339,15 @@ class ModelRunner:
                 requests,
                 is_lookahead=is_lookahead,
             )
+            if timing is not None:
+                timing.mark("before_decode")
             batch_result = self.custom_decode_forward(
                 forward_batch, schedule_batch, requests
             )
         if batch_result is None:
             batch_result = self.tp_worker.forward_batch_generation(forward_batch)
+        if timing is not None:
+            timing.mark("forward")
 
         if (
             not schedule_batch.is_prefill_only
@@ -336,6 +364,8 @@ class ModelRunner:
                 batch_result.logits_output, forward_batch, schedule_batch, requests
             )
             schedule_batch.output_ids = batch_result.next_token_ids
+            if timing is not None:
+                timing.mark("sample")
         return batch_result
 
     def finalize_skip_rids(self, scheduler_output) -> set[str]:
