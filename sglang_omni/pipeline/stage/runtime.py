@@ -23,6 +23,7 @@ from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import DataRef
 from sglang_omni.comm.engine import CommEngine
 from sglang_omni.comm.router import CommRouter
+from sglang_omni.pipeline.replicas import ReplicaTopology
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.pipeline.tp_control import TPLeaderFanout, TPWorkMessage
@@ -100,6 +101,7 @@ class Stage:
         disable_direct_cuda_ipc_payload: bool = False,
         tp_fanout: TPLeaderFanout | None = None,
         is_terminal: bool = False,
+        replica_topology: dict[str, list[str]] | None = None,
     ):
         self.name = name
         self.role = role
@@ -119,6 +121,8 @@ class Stage:
         self._tp_fanout = tp_fanout
         self._is_terminal = is_terminal
         self._owns_external_io = role in {"single", "leader"}
+        self._replica_topology = ReplicaTopology.from_dict(replica_topology)
+        self._replica_bindings: dict[str, dict[str, int]] = {}
 
         self._comm = CommEngine(
             CommRouter(
@@ -149,6 +153,24 @@ class Stage:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._scheduler_crash_error: BaseException | None = None
         self._background_task_error: BaseException | None = None
+
+    def _record_replica_bindings(
+        self, request_id: str, bindings: dict[str, int] | None
+    ) -> None:
+        if bindings:
+            self._replica_bindings.setdefault(request_id, {}).update(bindings)
+
+    def _resolve_target_instance(self, request_id: str, target: str) -> str:
+        if not self._replica_topology.is_replicated(target):
+            return target
+        bindings = self._replica_bindings.get(request_id)
+        replica_id = None if bindings is None else bindings.get(target)
+        if replica_id is None:
+            raise RuntimeError(
+                f"Stage {self.name}: no replica binding for target {target!r} "
+                f"(req={request_id})"
+            )
+        return self._replica_topology.resolve(target, replica_id)
 
     async def start(self) -> None:
         if self._running:
@@ -311,6 +333,7 @@ class Stage:
         self,
         msg: DataReadyMessage,
     ) -> None:
+        self._record_replica_bindings(msg.request_id, msg.replica_bindings)
         if msg.is_done or msg.error is not None:
             handler = self._on_stream_signal
             label = f"stream signal {msg.request_id}:{msg.from_stage}"
@@ -365,6 +388,7 @@ class Stage:
         request_id = msg.request_id
         if request_id in self._aborted:
             return
+        self._record_replica_bindings(request_id, msg.replica_bindings)
         self._active_requests.add(request_id)
         if self._stream_queue is not None and not self._stream_queue.has(request_id):
             self._stream_queue.open(request_id)
@@ -1080,6 +1104,7 @@ class Stage:
             raise RuntimeError(
                 f"Follower stage {self.name} cannot send downstream data"
             )
+        target = self._resolve_target_instance(request_id, target)
         endpoint = self.endpoints.get(target)
         if endpoint is None:
             raise RuntimeError(
@@ -1151,6 +1176,7 @@ class Stage:
                         from_stage=self.name,
                         to_stage=target,
                         data_ref=direct_ref,
+                        replica_bindings=self._replica_bindings.get(request_id),
                     ),
                 )
                 _emit_event(
@@ -1173,6 +1199,7 @@ class Stage:
             from_stage=self.name,
             to_stage=target,
             target_endpoint=endpoint,
+            replica_bindings=self._replica_bindings.get(request_id),
         )
         _emit_event(
             request_id=request_id,
@@ -1283,6 +1310,7 @@ class Stage:
     ) -> None:
         if not self._owns_external_io:
             return
+        target = self._resolve_target_instance(request_id, target)
         endpoint = self.endpoints.get(target)
         if endpoint is None:
             raise RuntimeError(
@@ -1358,6 +1386,7 @@ class Stage:
                     to_stage=target,
                     data_ref=direct_ref,
                     chunk_id=chunk_id,
+                    replica_bindings=self._replica_bindings.get(request_id),
                 ),
             )
             return
@@ -1384,6 +1413,7 @@ class Stage:
             chunk_id=chunk_id,
             metadata=metadata,
             transport=transport_kind,
+            replica_bindings=self._replica_bindings.get(request_id),
         )
 
     async def _send_stream_signal_to_target(
@@ -1396,6 +1426,7 @@ class Stage:
     ) -> None:
         if not self._owns_external_io:
             return
+        target = self._resolve_target_instance(request_id, target)
         endpoint = self.endpoints.get(target)
         if endpoint is None:
             raise RuntimeError(
@@ -1426,6 +1457,7 @@ class Stage:
             from_stage=self.name,
             is_done=is_done,
             error=error,
+            replica_bindings=self._replica_bindings.get(request_id),
         )
 
     async def _send_stream_to_coordinator(
@@ -1511,6 +1543,7 @@ class Stage:
         self._first_stream_chunk_seen.discard(request_id)
         self._local_stream_targets.pop(request_id, None)
         self._nonlocal_stream_targets.pop(request_id, None)
+        self._replica_bindings.pop(request_id, None)
 
     async def _handle_scheduler_crash(self, exc: BaseException) -> None:
         if self._scheduler_crash_error is not None:

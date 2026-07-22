@@ -162,6 +162,10 @@ class StageConfig(BaseModel):
     parallelism: ParallelismConfig = Field(default_factory=ParallelismConfig)
     process: str | None = None
 
+    # --- Replicas ---
+    num_replicas: int = 1
+    replica_devices: str | list[int] | None = None
+
     # --- Runtime intent ---
     runtime: StageRuntimeConfig = Field(default_factory=StageRuntimeConfig)
     runtime_arg_map: dict[str, str] = Field(default_factory=dict)
@@ -191,6 +195,8 @@ class StageConfig(BaseModel):
         parallelism_set = "parallelism" in fields_set
         if self.tp_size < 1:
             raise ValueError(f"Stage {self.name!r} must have tp_size >= 1")
+        if self.num_replicas < 1:
+            raise ValueError(f"Stage {self.name!r} must have num_replicas >= 1")
         if self.process is not None:
             self.process = self.process.strip()
             if not self.process:
@@ -390,6 +396,10 @@ class PipelineConfig(BaseModel):
                         f"Stage {s.name!r} project_payload references unknown stage {t!r}"
                     )
 
+        replicated = [s.name for s in self.stages if s.num_replicas > 1]
+        if replicated and entry in replicated:
+            raise ValueError(f"Entry stage {entry!r} cannot be replicated")
+
         for stage_name in self.runtime_overrides:
             if stage_name not in names:
                 raise ValueError(
@@ -438,6 +448,11 @@ class PipelineConfig(BaseModel):
             if stage.tp_size != 1:
                 raise ValueError(
                     f"fused group {group} cannot include TP stage {stage.name!r}"
+                )
+            if stage.num_replicas > 1:
+                raise ValueError(
+                    f"fused group {group} cannot include replicated stage "
+                    f"{stage.name!r}"
                 )
 
         gpu_ids = {

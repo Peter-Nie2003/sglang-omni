@@ -97,6 +97,9 @@ class StageLaunchConfig:
     # Fusion name map
     name_map: dict[str, str] = field(default_factory=dict)
 
+    # Replica topology (logical stage name -> instance names)
+    replica_topology: dict[str, list[str]] = field(default_factory=dict)
+
     # TP internal control (leader -> followers)
     follower_work_queues: list[Any] = field(default_factory=list)
     follower_abort_queues: list[Any] = field(default_factory=list)
@@ -761,6 +764,7 @@ def _construct_stage(
         disable_direct_cuda_ipc_payload=spec.disable_direct_cuda_ipc_payload,
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
+        replica_topology=spec.replica_topology or None,
     )
 
     if spec.is_stream_receiver:

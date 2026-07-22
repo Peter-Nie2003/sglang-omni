@@ -107,6 +107,8 @@ def split_replica_devices(
 
     if isinstance(replica_devices, str):
         ids = [int(part) for part in replica_devices.split(",") if part.strip()]
+    elif isinstance(replica_devices, int):
+        ids = [replica_devices]
     else:
         ids = [int(part) for part in replica_devices]
 

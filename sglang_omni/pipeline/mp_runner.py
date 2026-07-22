@@ -25,6 +25,7 @@ from sglang_omni.config.runtime import (
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.config.topology import ProcessTopologyPlan
 from sglang_omni.pipeline import Coordinator
+from sglang_omni.pipeline.replicas import ReplicaTopology
 from sglang_omni.pipeline.runtime_config import (
     IpcRuntimeDir,
     PipelineRuntimePrep,
@@ -50,6 +51,7 @@ def _build_stage_groups(
     endpoints: dict[str, str],
     placement_plan: StagePlacementPlan,
     process_plan: ProcessTopologyPlan,
+    replica_topology: ReplicaTopology | None = None,
 ) -> list[StageGroup]:
     """Build lifecycle groups from prepared endpoints and process topology.
 
@@ -58,12 +60,15 @@ def _build_stage_groups(
     """
     if ctx is None:
         ctx = multiprocessing.get_context("spawn")
+    if replica_topology is None:
+        replica_topology = ReplicaTopology()
 
     stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
     stream_receivers: set[str] = set()
     for scfg in stages_cfg:
         for target in scfg.stream_to:
-            stream_receivers.add(target)
+            canonical = name_map.get(target, target)
+            stream_receivers.update(replica_topology.instances(canonical))
     stage_cfg_by_name = {stage.name: stage for stage in stages_cfg}
 
     nccl_port_counter = _NcclPortAllocator()
@@ -114,8 +119,11 @@ def _build_stage_groups(
             wait_for_fn=stage_cfg.wait_for_fn,
             merge_fn=stage_cfg.merge_fn,
             project_payload={
-                name_map.get(target, target): dotted_path
+                instance: dotted_path
                 for target, dotted_path in stage_cfg.project_payload.items()
+                for instance in replica_topology.instances(
+                    name_map.get(target, target)
+                )
             },
             coordinator_endpoint=endpoints["completion"],
             abort_endpoint=endpoints["abort"],
@@ -129,6 +137,7 @@ def _build_stage_groups(
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             disable_direct_cuda_ipc_payload=stage_cfg.disable_direct_cuda_ipc_payload,
             name_map=name_map,
+            replica_topology=replica_topology.to_dict(),
         )
         if tp_size == 1:
             single_stage_specs[stage_cfg.name] = _build_single_stage_spec(
@@ -405,6 +414,7 @@ class MultiProcessPipelineRunner:
                 endpoints=prep.endpoints,
                 placement_plan=prep.placement_plan,
                 process_plan=prep.process_plan,
+                replica_topology=prep.replica_topology,
             )
 
             terminal_stages_resolver = (
@@ -418,6 +428,7 @@ class MultiProcessPipelineRunner:
                 entry_stage=prep.entry_stage,
                 terminal_stages=self._config.terminal_stages or None,
                 terminal_stages_resolver=terminal_stages_resolver,
+                replica_topology=prep.replica_topology,
             )
             await self._coordinator.start()
             self._completion_task = asyncio.create_task(
