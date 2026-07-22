@@ -15,6 +15,7 @@ import zmq
 from sglang_omni.config.placement import StagePlacementPlan, build_stage_placement_plan
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.config.topology import ProcessTopologyPlan, build_process_topology_plan
+from sglang_omni.pipeline.replicas import ReplicaTopology, expand_replica_stages
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ class PipelineRuntimePrep:
     process_plan: ProcessTopologyPlan
     runtime_dir: IpcRuntimeDir
     runtime_dir_created_here: bool
+    replica_topology: ReplicaTopology
 
 
 def create_ipc_runtime_dir(
@@ -96,6 +98,7 @@ def prepare_pipeline_runtime(
 ) -> PipelineRuntimePrep:
     """Prepare fused stages, endpoint allocation, and process topology."""
     stages_cfg, name_map, entry_stage = config.apply_fusion()
+    stages_cfg, replica_topology = expand_replica_stages(stages_cfg)
     runtime_dir = ipc_runtime_dir
     if runtime_dir is None:
         runtime_dir = create_ipc_runtime_dir(config, stages=stages_cfg)
@@ -128,6 +131,7 @@ def prepare_pipeline_runtime(
         process_plan=process_plan,
         runtime_dir=runtime_dir,
         runtime_dir_created_here=runtime_dir_created_here,
+        replica_topology=replica_topology,
     )
 
 

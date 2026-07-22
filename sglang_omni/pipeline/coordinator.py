@@ -10,6 +10,12 @@ from typing import Any, AsyncIterator
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
+from sglang_omni.pipeline.replicas import (
+    BindingPolicy,
+    ReplicaTopology,
+    RoundRobinBindingPolicy,
+    assign_replica_bindings,
+)
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import (
     AbortMessage,
@@ -59,6 +65,8 @@ class Coordinator:
         terminal_stages_resolver: (
             Callable[[OmniRequest], list[str] | None] | None
         ) = None,
+        replica_topology: ReplicaTopology | None = None,
+        binding_policy: BindingPolicy | None = None,
         max_in_flight: int | None = None,
     ):
         """Initialize coordinator.
@@ -69,6 +77,7 @@ class Coordinator:
             entry_stage: Name of the entry stage for new requests
             terminal_stages: Terminal stage names. When multiple are given,
                 the coordinator waits for all to complete before resolving.
+            replica_topology: Logical stage to expanded instance mapping.
             max_in_flight: If set, reject new submits once this many requests
                 are already tracked. Intended as generation capacity
                 (max_running_requests + max_queued_requests).
@@ -79,6 +88,8 @@ class Coordinator:
         )
         self._terminal_stages_resolver = terminal_stages_resolver
         self._partial_results: dict[str, dict[str, Any]] = {}
+        self._replica_topology = replica_topology or ReplicaTopology()
+        self._binding_policy = binding_policy or RoundRobinBindingPolicy()
         if max_in_flight is None:
             self.max_in_flight = None
         else:
@@ -356,7 +367,9 @@ class Coordinator:
                     if not msg.success:
                         raise QueueFullError.from_message(msg.error)
                     yield msg
-                    completed_stages.add(msg.from_stage)
+                    completed_stages.add(
+                        self._replica_topology.logical_name(msg.from_stage)
+                    )
                     if (
                         not expected_terminal_stages
                         or completed_stages >= expected_terminal_stages
@@ -435,12 +448,20 @@ class Coordinator:
             metadata={"entry_stage": self.entry_stage},
         )
 
+        replica_bindings = assign_replica_bindings(
+            self._replica_topology, self._binding_policy, request_id
+        )
+
         # Submit to entry stage
         entry_info = self._stages[self.entry_stage]
         await self.control_plane.submit_to_stage(
             self.entry_stage,
             entry_info.control_endpoint,
-            SubmitMessage(request_id=request_id, data=payload),
+            SubmitMessage(
+                request_id=request_id,
+                data=payload,
+                replica_bindings=replica_bindings,
+            ),
         )
 
         # Update state
@@ -627,8 +648,9 @@ class Coordinator:
             self._requests.pop(request_id, None)
             return
 
+        from_stage = self._replica_topology.logical_name(msg.from_stage)
         expected_terminal_stages = self._expected_terminal_stages(request_id)
-        if expected_terminal_stages and msg.from_stage not in expected_terminal_stages:
+        if expected_terminal_stages and from_stage not in expected_terminal_stages:
             logger.debug(
                 "Coordinator ignoring completion from inactive terminal: "
                 "req=%s stage=%s expected=%s",
@@ -653,7 +675,7 @@ class Coordinator:
 
         # Multi-terminal: collect partial results
         partials = self._partial_results.setdefault(request_id, {})
-        partials[msg.from_stage] = msg.result
+        partials[from_stage] = msg.result
 
         # Forward stream completion per-stage
         if request_id in self._stream_queues:
