@@ -39,6 +39,7 @@ class _PayloadSendJob(msgspec.Struct, frozen=True):
     target_endpoint: str
     ready: asyncio.Future[DataRef]
     enqueued_ns: int
+    replica_bindings: dict[str, int] | None = None
 
 
 class _StreamSendJob(msgspec.Struct, frozen=True):
@@ -54,6 +55,7 @@ class _StreamSendJob(msgspec.Struct, frozen=True):
     transport: TransportKind
     ready: asyncio.Future[DataRef]
     enqueued_ns: int
+    replica_bindings: dict[str, int] | None = None
 
 
 class CommEngine:
@@ -126,6 +128,7 @@ class CommEngine:
         from_stage: str,
         to_stage: str,
         target_endpoint: str,
+        replica_bindings: dict[str, int] | None = None,
     ) -> DataRef:
         if not isinstance(payload, StagePayload):
             raise TypeError(
@@ -147,6 +150,7 @@ class CommEngine:
                 target_endpoint=target_endpoint,
                 ready=ready,
                 enqueued_ns=enqueue_start,
+                replica_bindings=replica_bindings,
             )
         )
         _comm_trace(
@@ -183,6 +187,7 @@ class CommEngine:
         chunk_id: int,
         metadata: dict[str, Any] | None,
         transport: TransportKind,
+        replica_bindings: dict[str, int] | None = None,
     ) -> None:
         queue = self._send_queue_for(target_stage)
         loop = asyncio.get_running_loop()
@@ -202,6 +207,7 @@ class CommEngine:
                 transport=transport,
                 ready=ready,
                 enqueued_ns=enqueue_start,
+                replica_bindings=replica_bindings,
             )
         )
         _comm_trace(
@@ -321,6 +327,7 @@ class CommEngine:
                     from_stage=job.from_stage,
                     to_stage=job.to_stage,
                     data_ref=data_ref.to_dict(),
+                    replica_bindings=job.replica_bindings,
                 ),
             )
             control_ms = _comm_elapsed_ms(control_start)
@@ -374,6 +381,7 @@ class CommEngine:
                     to_stage=job.target_stage,
                     data_ref=data_ref.to_dict(),
                     chunk_id=job.chunk_id,
+                    replica_bindings=job.replica_bindings,
                 ),
             )
             control_ms = _comm_elapsed_ms(control_start)
