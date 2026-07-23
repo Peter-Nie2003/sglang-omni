@@ -107,7 +107,11 @@ def prepare_pipeline_runtime(
         runtime_dir_created_here = False
 
     try:
-        placement_plan = build_stage_placement_plan(config, stages_cfg=stages_cfg)
+        placement_plan = build_stage_placement_plan(
+            config,
+            stages_cfg=stages_cfg,
+            replica_instances=replica_topology.replicas,
+        )
         process_plan = build_process_topology_plan(
             config,
             placement_plan,
