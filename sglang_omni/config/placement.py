@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import inspect
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from sglang_omni.config.runtime import reject_untyped_total_gpu_memory_fraction
@@ -34,6 +34,16 @@ class GpuPlacement:
 class StagePlacementPlan:
     stages: dict[str, StagePlacement]
     gpus: dict[int, GpuPlacement]
+    replica_instances: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def instances_of(self, logical_name: str) -> list[StagePlacement]:
+        """Placements of every replica instance behind *logical_name*.
+
+        Unreplicated stages resolve to their own placement; CPU-only stages
+        (absent from the plan) resolve to an empty list.
+        """
+        names = self.replica_instances.get(logical_name, (logical_name,))
+        return [self.stages[name] for name in names if name in self.stages]
 
 
 class PlacementPolicy(Protocol):
@@ -51,6 +61,7 @@ class StagePlacementPlanner:
         *,
         stages_cfg: list[StageConfig] | None = None,
         apply_policy: bool = True,
+        replica_instances: dict[str, tuple[str, ...]] | None = None,
     ) -> StagePlacementPlan:
         stages = stages_cfg if stages_cfg is not None else self._config.stages
         placements: dict[str, StagePlacement] = {}
@@ -83,6 +94,7 @@ class StagePlacementPlanner:
         plan = StagePlacementPlan(
             stages=placements,
             gpus=gpu_plans,
+            replica_instances=dict(replica_instances or {}),
         )
         self._validate_memory_budgets(plan)
         if apply_policy:
@@ -105,10 +117,12 @@ def build_stage_placement_plan(
     *,
     stages_cfg: list[StageConfig] | None = None,
     apply_policy: bool = True,
+    replica_instances: dict[str, tuple[str, ...]] | None = None,
 ) -> StagePlacementPlan:
     return StagePlacementPlanner(config).build(
         stages_cfg=stages_cfg,
         apply_policy=apply_policy,
+        replica_instances=replica_instances,
     )
 
 

@@ -177,17 +177,42 @@ class TestBinding:
         )
 
 
-class TestColocatedReplicaRejection:
-    _SPEECH_STAGES = (
-        "preprocessing",
-        "image_encoder",
-        "audio_encoder",
-        "mm_aggregate",
-        "thinker",
-        "decode",
-        "talker_ar",
-        "code2wav",
+_SPEECH_STAGES = (
+    "preprocessing",
+    "image_encoder",
+    "audio_encoder",
+    "mm_aggregate",
+    "thinker",
+    "decode",
+    "talker_ar",
+    "code2wav",
+)
+
+
+def _speech_config(config_cls_name: str | None = None) -> PipelineConfig:
+    cls = (
+        type(config_cls_name, (PipelineConfig,), {})
+        if config_cls_name
+        else PipelineConfig
     )
+    return cls(
+        model_path="m",
+        stages=[
+            _stage(
+                name,
+                **(
+                    {"num_replicas": 2, "replica_devices": "1,2", "gpu": 1}
+                    if name == "talker_ar"
+                    else {}
+                ),
+            )
+            for name in _SPEECH_STAGES
+        ],
+    )
+
+
+class TestColocatedReplicaRejection:
+    _SPEECH_STAGES = _SPEECH_STAGES
 
     def test_colocated_rejects_replicated_stage(self):
         from sglang_omni.models.qwen3_omni.placement import Qwen3OmniPlacementPolicy
@@ -211,6 +236,53 @@ class TestColocatedReplicaRejection:
         )
         with pytest.raises(ValueError, match="does not support stage replicas"):
             Qwen3OmniPlacementPolicy().validate(config, plan=None)
+
+
+class TestPlacementLogicalView:
+    def _plan(self, talker_r0_gpu: int) -> "StagePlacementPlan":
+        from sglang_omni.config.placement import StagePlacement, StagePlacementPlan
+
+        def placement(name: str, gpu: int) -> StagePlacement:
+            return StagePlacement(
+                stage_name=name,
+                gpu_ids=(gpu,),
+                tp_size=1,
+                total_gpu_memory_fraction=None,
+            )
+
+        return StagePlacementPlan(
+            stages={
+                "thinker": placement("thinker", 0),
+                "talker_ar@r0": placement("talker_ar@r0", talker_r0_gpu),
+                "talker_ar@r1": placement("talker_ar@r1", 2),
+            },
+            gpus={},
+            replica_instances={"talker_ar": ("talker_ar@r0", "talker_ar@r1")},
+        )
+
+    def test_instances_of(self):
+        plan = self._plan(talker_r0_gpu=1)
+        assert [p.stage_name for p in plan.instances_of("talker_ar")] == [
+            "talker_ar@r0",
+            "talker_ar@r1",
+        ]
+        assert [p.stage_name for p in plan.instances_of("thinker")] == ["thinker"]
+        assert plan.instances_of("preprocessing") == []
+
+    def test_policy_catches_replica_sharing_gpu_with_thinker(self):
+        from sglang_omni.models.qwen3_omni.placement import Qwen3OmniPlacementPolicy
+
+        with pytest.raises(ValueError, match="talker_ar@r0"):
+            Qwen3OmniPlacementPolicy().validate(
+                _speech_config(), self._plan(talker_r0_gpu=0)
+            )
+
+    def test_policy_passes_disjoint_replicas(self):
+        from sglang_omni.models.qwen3_omni.placement import Qwen3OmniPlacementPolicy
+
+        Qwen3OmniPlacementPolicy().validate(
+            _speech_config(), self._plan(talker_r0_gpu=1)
+        )
 
 
 class TestSchemaValidation:
