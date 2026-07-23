@@ -46,6 +46,7 @@ class Qwen3OmniPlacementPolicy:
             return
 
         if type(config).__name__ == _COLOCATED_CONFIG_CLASS:
+            self._validate_colocated_qwen_replicas(stage_map)
             self._validate_colocated_qwen_parallelism(stage_map)
             self._validate_colocated_qwen_topology(plan)
             self._validate_colocated_qwen_runtime(stage_map)
@@ -64,6 +65,16 @@ class Qwen3OmniPlacementPolicy:
             "Qwen thinker and talker_ar may share a GPU only with "
             f"{_COLOCATED_CONFIG_CLASS}"
         )
+
+    def _validate_colocated_qwen_replicas(self, stage_map) -> None:
+        replicated = sorted(
+            name for name, stage in stage_map.items() if stage.num_replicas > 1
+        )
+        if replicated:
+            raise ValueError(
+                "Qwen colocated speech does not support stage replicas; "
+                f"got num_replicas > 1 for {replicated}"
+            )
 
     def _validate_colocated_qwen_parallelism(self, stage_map) -> None:
         for stage_name in _AR_STAGES:

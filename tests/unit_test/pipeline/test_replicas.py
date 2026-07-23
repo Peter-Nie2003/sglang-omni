@@ -177,6 +177,42 @@ class TestBinding:
         )
 
 
+class TestColocatedReplicaRejection:
+    _SPEECH_STAGES = (
+        "preprocessing",
+        "image_encoder",
+        "audio_encoder",
+        "mm_aggregate",
+        "thinker",
+        "decode",
+        "talker_ar",
+        "code2wav",
+    )
+
+    def test_colocated_rejects_replicated_stage(self):
+        from sglang_omni.models.qwen3_omni.placement import Qwen3OmniPlacementPolicy
+
+        colocated_cls = type(
+            "Qwen3OmniSpeechColocatedPipelineConfig", (PipelineConfig,), {}
+        )
+        config = colocated_cls(
+            model_path="m",
+            stages=[
+                _stage(
+                    name,
+                    **(
+                        {"num_replicas": 2, "replica_devices": "0,1", "gpu": 0}
+                        if name == "talker_ar"
+                        else {}
+                    ),
+                )
+                for name in self._SPEECH_STAGES
+            ],
+        )
+        with pytest.raises(ValueError, match="does not support stage replicas"):
+            Qwen3OmniPlacementPolicy().validate(config, plan=None)
+
+
 class TestSchemaValidation:
     def test_num_replicas_must_be_positive(self):
         with pytest.raises(ValueError, match="num_replicas >= 1"):
