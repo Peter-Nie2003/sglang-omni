@@ -285,6 +285,32 @@ class TestPlacementLogicalView:
         )
 
 
+class TestStageOverrides:
+    def _manager(self):
+        pytest.importorskip("transformers")
+        from sglang_omni.config import manager
+
+        return manager
+
+    def test_replica_fields_pass_through(self):
+        manager = self._manager()
+        config = _speech_config()
+        overridden = manager._apply_stage_overrides(
+            config,
+            {"code2wav": {"num_replicas": 3, "replica_devices": "1,2,3"}},
+        )
+        stage = {s.name: s for s in overridden.stages}["code2wav"]
+        assert stage.num_replicas == 3
+        assert stage.replica_devices == "1,2,3"
+
+    def test_unsupported_key_still_rejected(self):
+        manager = self._manager()
+        with pytest.raises(ValueError, match="unsupported keys"):
+            manager._apply_stage_overrides(
+                _speech_config(), {"code2wav": {"gpu": 3}}
+            )
+
+
 class TestSchemaValidation:
     def test_num_replicas_must_be_positive(self):
         with pytest.raises(ValueError, match="num_replicas >= 1"):
