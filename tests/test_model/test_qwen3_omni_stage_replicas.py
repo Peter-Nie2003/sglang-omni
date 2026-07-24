@@ -24,7 +24,7 @@ import requests
 
 from sglang_omni.utils import find_available_port
 from tests.utils import (
-    no_proxy_env,
+    disable_proxy,
     server_log_file,
     start_server_from_cmd,
     stop_server,
@@ -88,7 +88,7 @@ def _post_audio_request(port: int, prompt: str) -> dict:
         "temperature": 0.0,
         "stream": False,
     }
-    with no_proxy_env():
+    with disable_proxy():
         response = requests.post(
             f"http://localhost:{port}/v1/chat/completions",
             json=payload,
