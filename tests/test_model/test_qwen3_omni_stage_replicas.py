@@ -58,7 +58,12 @@ PROMPTS = [
 @pytest.fixture(scope="module")
 def replica_server(tmp_path_factory: pytest.TempPathFactory):
     port = find_available_port()
-    log_file = server_log_file(tmp_path_factory, "stage_replica_logs")
+    # The log file is load-bearing here (the test greps it for replica
+    # instance names), so create one even locally where server_log_file
+    # returns None.
+    log_file = server_log_file(tmp_path_factory, "stage_replica_logs") or (
+        tmp_path_factory.mktemp("stage_replica_logs") / "server.log"
+    )
     cmd = [
         sys.executable,
         "-m",
@@ -71,7 +76,7 @@ def replica_server(tmp_path_factory: pytest.TempPathFactory):
         "--port",
         str(port),
     ]
-    proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT)
+    proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT, tee=True)
     proc.port = port  # type: ignore[attr-defined]
     proc.log_file = log_file  # type: ignore[attr-defined]
     yield proc
