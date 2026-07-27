@@ -1409,3 +1409,59 @@ def test_stage_local_object_requires_registered_target() -> None:
             )
 
     asyncio.run(_run())
+
+
+def test_local_dispatch_propagates_replica_bindings_to_receiver() -> None:
+    async def _run() -> None:
+        dispatcher = LocalStageDispatcher()
+        receiver = make_stage(
+            name="thinker",
+            scheduler=FakeScheduler(),
+            replica_topology={"decode": ["decode@r0", "decode@r1"]},
+        )
+        sender = make_stage(
+            name="mm_aggregate",
+            endpoints={"thinker": "inproc://thinker"},
+            same_process_targets={"thinker"},
+            local_dispatcher=dispatcher,
+        )
+        sender._record_replica_bindings("req-local", {"decode": 1})
+        dispatcher.register_many([sender, receiver])
+
+        await sender._send_to_stage(
+            "req-local",
+            "thinker",
+            make_stage_payload(request_id="req-local", data={"x": 1}),
+            allow_local_object=True,
+        )
+
+        assert receiver._replica_bindings["req-local"] == {"decode": 1}
+        assert receiver._resolve_target_instance("req-local", "decode") == "decode@r1"
+
+    asyncio.run(_run())
+
+
+def test_resolve_target_instance_without_binding_raises() -> None:
+    stage = make_stage(
+        name="talker_ar",
+        replica_topology={"code2wav": ["code2wav@r0", "code2wav@r1"]},
+    )
+    with pytest.raises(RuntimeError, match="no replica binding"):
+        stage._resolve_target_instance("req-x", "code2wav")
+
+
+def test_replica_bindings_not_recorded_after_finish_or_abort() -> None:
+    stage = make_stage(
+        name="thinker",
+        replica_topology={"decode": ["decode@r0", "decode@r1"]},
+    )
+    stage._record_replica_bindings("req-1", {"decode": 0})
+    assert "req-1" in stage._replica_bindings
+
+    stage._clear_request_state("req-1")
+    stage._record_replica_bindings("req-1", {"decode": 0})
+    assert "req-1" not in stage._replica_bindings
+
+    stage._record_aborted_request_id("req-2")
+    stage._record_replica_bindings("req-2", {"decode": 1})
+    assert "req-2" not in stage._replica_bindings

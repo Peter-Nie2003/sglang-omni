@@ -421,6 +421,43 @@ def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:
     )
 
 
+def test_runner_wires_same_process_targets_across_colocated_replicas() -> None:
+    config = PipelineConfig(
+        model_path="model",
+        stages=[
+            stage("src", next="gen"),
+            stage(
+                "gen",
+                next="wav",
+                process="speech",
+                num_replicas=2,
+                replica_devices="1,2",
+            ),
+            stage(
+                "wav",
+                terminal=True,
+                process="speech",
+                num_replicas=2,
+                replica_devices="1,2",
+            ),
+        ],
+    )
+    prep = prepare_pipeline_runtime(config)
+    by_name = {stage_cfg.name: stage_cfg for stage_cfg in prep.stages_cfg}
+
+    def resolve(name: str) -> set[str]:
+        return _resolve_same_process_targets(
+            by_name[name],
+            by_name,
+            prep.name_map,
+            prep.process_plan,
+            prep.replica_topology,
+        )
+
+    assert resolve("gen@r0") == {"wav@r0"}
+    assert resolve("gen@r1") == {"wav@r1"}
+
+
 def test_fused_stages_reject_unsupported_internal_stage_contracts() -> None:
     with pytest.raises(ValueError, match="cannot include TP stage"):
         PipelineConfig(

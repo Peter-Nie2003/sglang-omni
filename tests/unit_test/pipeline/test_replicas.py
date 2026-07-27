@@ -306,9 +306,7 @@ class TestStageOverrides:
     def test_unsupported_key_still_rejected(self):
         manager = self._manager()
         with pytest.raises(ValueError, match="unsupported keys"):
-            manager._apply_stage_overrides(
-                _speech_config(), {"code2wav": {"gpu": 3}}
-            )
+            manager._apply_stage_overrides(_speech_config(), {"code2wav": {"gpu": 3}})
 
 
 class TestSchemaValidation:
@@ -337,3 +335,67 @@ class TestSchemaValidation:
                 ],
                 fused_stages=[["a", "b"]],
             )
+
+
+class TestUnequalReplicaCounts:
+    def test_bindings_cycle_independently_and_resolve(self):
+        _, topo = expand_replica_stages(
+            [
+                _stage("talker_ar", num_replicas=3, replica_devices="1,2,3", gpu=1),
+                _stage("code2wav", num_replicas=2, replica_devices="1,2", gpu=1),
+            ]
+        )
+        policy = RoundRobinBindingPolicy()
+        bindings = [assign_replica_bindings(topo, policy, f"req{i}") for i in range(6)]
+        assert [b["talker_ar"] for b in bindings] == [0, 1, 2, 0, 1, 2]
+        assert [b["code2wav"] for b in bindings] == [0, 1, 0, 1, 0, 1]
+        for b in bindings:
+            assert (
+                topo.resolve("talker_ar", b["talker_ar"])
+                == f"talker_ar@r{b['talker_ar']}"
+            )
+            assert (
+                topo.resolve("code2wav", b["code2wav"]) == f"code2wav@r{b['code2wav']}"
+            )
+
+
+class TestReservedStageNames:
+    def test_reserved_instance_suffix_rejected(self):
+        with pytest.raises(ValueError, match="reserved"):
+            PipelineConfig(model_path="m", stages=[_stage("foo@r0")])
+
+    def test_non_numeric_suffix_allowed(self):
+        PipelineConfig(model_path="m", stages=[_stage("foo@rx")])
+
+
+class TestRuntimeOverridesOnReplicas:
+    def _config(self) -> PipelineConfig:
+        return PipelineConfig(
+            model_path="m",
+            stages=[
+                _stage("src", terminal=False, next="gen"),
+                _stage("gen", num_replicas=2, replica_devices="1,2", gpu=1),
+            ],
+            runtime_overrides={"gen": {"max_seq_len": 4096}},
+        )
+
+    def test_replica_instances_inherit_logical_overrides(self):
+        from sglang_omni.config.runtime import resolve_stage_static_factory_args
+
+        config = self._config()
+        expanded, topo = expand_replica_stages(list(config.stages))
+        assert topo.instances("gen") == ("gen@r0", "gen@r1")
+
+        for stage_cfg in expanded:
+            if stage_cfg.name.startswith("gen@r"):
+                args = resolve_stage_static_factory_args(stage_cfg, config)
+                assert (
+                    args.get("max_seq_len") == 4096
+                ), f"{stage_cfg.name} lost the override configured for 'gen'"
+
+    def test_unreplicated_stage_does_not_borrow_overrides(self):
+        from sglang_omni.config.runtime import resolve_stage_static_factory_args
+
+        config = self._config()
+        src = {s.name: s for s in config.stages}["src"]
+        assert "max_seq_len" not in resolve_stage_static_factory_args(src, config)
