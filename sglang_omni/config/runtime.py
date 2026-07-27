@@ -7,7 +7,11 @@ import inspect
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from sglang_omni.config.schema import PipelineConfig, StageConfig
+from sglang_omni.config.schema import (
+    PipelineConfig,
+    StageConfig,
+    parse_replica_instance_name,
+)
 from sglang_omni.utils.imports import import_string
 
 
@@ -37,6 +41,24 @@ def resolve_stage_factory_args(
     )
 
 
+def _runtime_overrides_for(
+    stage_name: str,
+    global_cfg: PipelineConfig,
+) -> dict[str, Any]:
+    """Overrides for *stage_name*, falling back to its logical stage.
+
+    Replica expansion renames stages to ``talker_ar@r0``, but
+    ``runtime_overrides`` stays keyed by the logical name the user wrote.
+    """
+    override = global_cfg.runtime_overrides.get(stage_name)
+    if override is not None:
+        return override
+    logical, replica_id = parse_replica_instance_name(stage_name)
+    if replica_id is None:
+        return {}
+    return global_cfg.runtime_overrides.get(logical, {})
+
+
 def resolve_stage_static_factory_args(
     stage_cfg: StageConfig,
     global_cfg: PipelineConfig,
@@ -44,7 +66,7 @@ def resolve_stage_static_factory_args(
     """Resolve factory kwargs that do not require importing the factory."""
 
     args = dict(stage_cfg.factory_args)
-    runtime_overrides = global_cfg.runtime_overrides.get(stage_cfg.name, {})
+    runtime_overrides = _runtime_overrides_for(stage_cfg.name, global_cfg)
     _validate_runtime_sources(stage_cfg, args, runtime_overrides)
     _merge_factory_arg_overrides(args, runtime_overrides)
     _apply_typed_runtime_args(args, stage_cfg)

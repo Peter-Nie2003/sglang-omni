@@ -8,6 +8,7 @@ import gc
 import pytest
 
 from sglang_omni.pipeline.coordinator import Coordinator
+from sglang_omni.pipeline.replicas import ReplicaTopology
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 
@@ -767,5 +768,103 @@ def test_coordinator_stream_stage_failure_cancels_future() -> None:
         assert error_sink == ["boom"]
         assert future.cancelled() is True
         assert "req-1" not in coordinator._completion_futures
+
+    asyncio.run(_run())
+
+
+def test_admin_resolves_logical_replica_target_to_all_instances() -> None:
+    coordinator = Coordinator(
+        "inproc://complete",
+        "inproc://abort",
+        entry_stage="preprocess",
+        replica_topology=ReplicaTopology(
+            replicas={"talker_ar": ("talker_ar@r0", "talker_ar@r1")}
+        ),
+    )
+    coordinator.control_plane = RecordingCoordinatorControlPlane()
+    coordinator.register_stage("talker_ar@r0", "inproc://t0")
+    coordinator.register_stage("talker_ar@r1", "inproc://t1")
+    coordinator.register_stage("thinker", "inproc://thinker")
+
+    assert coordinator._resolve_admin_stages(["talker_ar"]) == [
+        "talker_ar@r0",
+        "talker_ar@r1",
+    ]
+    assert coordinator._resolve_admin_stages(
+        ["talker_ar", "talker_ar@r0", "thinker"]
+    ) == ["talker_ar@r0", "talker_ar@r1", "thinker"]
+    assert coordinator._resolve_admin_stages(None) == [
+        "talker_ar@r0",
+        "talker_ar@r1",
+        "thinker",
+    ]
+    with pytest.raises(ValueError, match="Unknown admin target"):
+        coordinator._resolve_admin_stages(["nope"])
+
+
+def test_coordinator_normalizes_replica_instance_name_on_stream_chunk() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["code2wav"],
+            replica_topology=ReplicaTopology(
+                replicas={"code2wav": ("code2wav@r0", "code2wav@r1")}
+            ),
+        )
+        queue: asyncio.Queue = asyncio.Queue()
+        coordinator._stream_queues["req-1"] = queue
+
+        await coordinator._handle_stream(
+            StreamMessage(
+                request_id="req-1",
+                from_stage="code2wav@r1",
+                chunk={"audio": "x"},
+                stage_name="code2wav@r1",
+                modality="audio",
+                chunk_id=0,
+            )
+        )
+
+        routed = queue.get_nowait()
+        assert routed.from_stage == "code2wav"
+        assert routed.stage_name == "code2wav"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("success", [True, False])
+def test_coordinator_normalizes_replica_instance_name_on_completion(
+    success: bool,
+) -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["code2wav"],
+            replica_topology=ReplicaTopology(
+                replicas={"code2wav": ("code2wav@r0", "code2wav@r1")}
+            ),
+        )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        queue: asyncio.Queue = asyncio.Queue()
+        coordinator._stream_queues["req-1"] = queue
+        await coordinator._submit_request("req-1", {"text": "hello"})
+
+        await coordinator._handle_completion(
+            CompleteMessage(
+                "req-1",
+                "code2wav@r1",
+                success,
+                result={"audio": "ok"} if success else None,
+                error=None if success else "boom",
+            )
+        )
+
+        assert queue.get_nowait().from_stage == "code2wav"
 
     asyncio.run(_run())

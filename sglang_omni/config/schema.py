@@ -7,6 +7,20 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
+REPLICA_SEPARATOR = "@r"
+
+
+def replica_instance_name(logical_name: str, replica_id: int) -> str:
+    return f"{logical_name}{REPLICA_SEPARATOR}{replica_id}"
+
+
+def parse_replica_instance_name(name: str) -> tuple[str, int | None]:
+    """Split ``stage@rN`` into ``(stage, N)``; plain names get ``None``."""
+    logical, sep, suffix = name.rpartition(REPLICA_SEPARATOR)
+    if not sep or not suffix.isdigit():
+        return name, None
+    return logical, int(suffix)
+
 
 class CommConfig(BaseModel):
     """Per-stage communication buffer and Mooncake options.
@@ -501,6 +515,13 @@ class PipelineConfig(BaseModel):
         replicated = [s.name for s in self.stages if s.num_replicas > 1]
         if replicated and entry in replicated:
             raise ValueError(f"Entry stage {entry!r} cannot be replicated")
+
+        for s in self.stages:
+            if parse_replica_instance_name(s.name)[1] is not None:
+                raise ValueError(
+                    f"Stage name {s.name!r} uses the '@r<N>' suffix reserved "
+                    "for replica instances"
+                )
 
         for stage_name in self.runtime_overrides:
             if stage_name not in names:

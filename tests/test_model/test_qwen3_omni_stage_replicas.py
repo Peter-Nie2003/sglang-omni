@@ -2,10 +2,10 @@
 """Stage-replica smoke test for the Qwen3-Omni speech pipeline.
 
 Launches the 2-replica speech deployment (thinker on GPU 0, one
-talker_ar + code2wav pair each on GPU 1 and GPU 2) and drives enough
-audio requests through it that round-robin admission covers every
-replica. Asserts every request returns audio and that both replica
-instances of each speech stage actually served traffic.
+talker_ar + code2wav pair each on GPU 1 and GPU 2) and drives audio
+requests through it. Asserts every request returns audio, that all four
+replica instances were spawned and registered, and that admission
+round-robined across both replicas of each replicated stage.
 
 Requires 3 GPUs.
 
@@ -15,12 +15,15 @@ Usage:
 
 from __future__ import annotations
 
+import ast
 import base64
+import re
 import sys
 from pathlib import Path
 
 import pytest
 import requests
+import torch
 
 from sglang_omni.utils import find_available_port
 from tests.utils import (
@@ -30,6 +33,13 @@ from tests.utils import (
     stop_server,
 )
 
+REQUIRED_GPUS = 3
+
+pytestmark = pytest.mark.skipif(
+    torch.cuda.device_count() < REQUIRED_GPUS,
+    reason=f"requires {REQUIRED_GPUS} GPUs",
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
@@ -37,9 +47,8 @@ REPLICA_CONFIG = "examples/configs/qwen3_omni_speech_replica2.yaml"
 STARTUP_TIMEOUT = 900
 REQUEST_TIMEOUT = 300
 
-# Even requests bind to replica 0, odd to replica 1 (round-robin admission),
-# so 4 requests exercise every replica twice.
 NUM_REQUESTS = 4
+REPLICATED_STAGES = ("talker_ar", "code2wav")
 REPLICA_INSTANCES = (
     "talker_ar@r0",
     "talker_ar@r1",
@@ -58,9 +67,8 @@ PROMPTS = [
 @pytest.fixture(scope="module")
 def replica_server(tmp_path_factory: pytest.TempPathFactory):
     port = find_available_port()
-    # The log file is load-bearing here (the test greps it for replica
-    # instance names), so create one even locally where server_log_file
-    # returns None.
+    # Note (wenyao): the test greps this log, so it must exist even locally
+    # where server_log_file returns None.
     log_file = server_log_file(tmp_path_factory, "stage_replica_logs") or (
         tmp_path_factory.mktemp("stage_replica_logs") / "server.log"
     )
@@ -119,12 +127,23 @@ def test_every_replica_serves_audio(replica_server):
             f"({len(audio_bytes)} bytes)"
         )
 
-    # Round-robin admission alternates replicas, so all requests succeeding
-    # above already proves both replicas served traffic. The log check below
-    # only guards topology: all four instances were actually spawned.
     log_text = log_file.read_text()
     missing = [name for name in REPLICA_INSTANCES if name not in log_text]
     assert not missing, (
         f"replica instances never appeared in server log: {missing}; "
         "expected all four instance stages to be spawned and registered"
     )
+
+    admitted = re.findall(r"bindings=(\{.*?\})", log_text)
+    assert (
+        len(admitted) >= NUM_REQUESTS
+    ), f"expected at least {NUM_REQUESTS} admission log lines, got {len(admitted)}"
+    bound: dict[str, set[int]] = {}
+    for raw in admitted:
+        for stage, replica_id in ast.literal_eval(raw).items():
+            bound.setdefault(stage, set()).add(replica_id)
+    for stage in REPLICATED_STAGES:
+        assert bound.get(stage) == {
+            0,
+            1,
+        }, f"{stage} did not round-robin across both replicas: {bound.get(stage)}"
