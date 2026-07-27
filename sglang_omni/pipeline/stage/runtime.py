@@ -141,6 +141,7 @@ class Stage:
 
         self._running = False
         self._aborted: set[str] = set()
+        self._finished_requests: set[str] = set()
         self._active_requests: set[str] = set()
         self._stream_queue: StreamQueue | None = None
         self._stream_chunk_counters: dict[tuple[str, str], int] = {}
@@ -157,8 +158,13 @@ class Stage:
     def _record_replica_bindings(
         self, request_id: str, bindings: dict[str, int] | None
     ) -> None:
-        if bindings:
-            self._replica_bindings.setdefault(request_id, {}).update(bindings)
+        # Note (wenyao): a late message would otherwise resurrect an entry
+        # nothing clears again.
+        if not bindings:
+            return
+        if request_id in self._aborted or request_id in self._finished_requests:
+            return
+        self._replica_bindings.setdefault(request_id, {}).update(bindings)
 
     def _resolve_target_instance(self, request_id: str, target: str) -> str:
         if not self._replica_topology.is_replicated(target):
@@ -462,7 +468,9 @@ class Stage:
         request_id: str,
         from_stage: str,
         payload: Any,
+        replica_bindings: dict[str, int] | None = None,
     ) -> None:
+        self._record_replica_bindings(request_id, replica_bindings)
         await self._receive_payload_from_stage(request_id, from_stage, payload)
 
     async def receive_local_stream_chunk(
@@ -472,9 +480,11 @@ class Stage:
         chunk_id: int,
         data: Any,
         metadata: dict[str, Any] | None = None,
+        replica_bindings: dict[str, int] | None = None,
     ) -> None:
         if request_id in self._aborted:
             return
+        self._record_replica_bindings(request_id, replica_bindings)
         self._active_requests.add(request_id)
         item = StreamItem(
             chunk_id=chunk_id,
@@ -496,7 +506,9 @@ class Stage:
         *,
         is_done: bool = False,
         error: str | None = None,
+        replica_bindings: dict[str, int] | None = None,
     ) -> None:
+        self._record_replica_bindings(request_id, replica_bindings)
         await self._receive_stream_signal(
             request_id,
             from_stage,
@@ -1148,6 +1160,7 @@ class Stage:
                 to_stage=target,
                 request_id=request_id,
                 payload=projected_payload,
+                replica_bindings=self._replica_bindings.get(request_id),
             )
             return
 
@@ -1353,6 +1366,7 @@ class Stage:
                 chunk_id=chunk_id,
                 data=data,
                 metadata=metadata,
+                replica_bindings=self._replica_bindings.get(request_id),
             )
             return
         self._record_nonlocal_stream_target(request_id, target)
@@ -1443,6 +1457,7 @@ class Stage:
                 request_id=request_id,
                 is_done=is_done,
                 error=error,
+                replica_bindings=self._replica_bindings.get(request_id),
             )
             return
         self._record_nonlocal_stream_target(request_id, target)
@@ -1528,6 +1543,7 @@ class Stage:
         self._clear_request_state(request_id)
 
     def _clear_request_state(self, request_id: str) -> None:
+        self._record_bounded_request_id(self._finished_requests, request_id)
         self._active_requests.discard(request_id)
         self.input_handler.cancel(request_id)
         if self._stream_queue is not None:
@@ -1577,12 +1593,16 @@ class Stage:
                 logger.exception("Stage %s abort listener crashed", self.name)
 
     def _record_aborted_request_id(self, request_id: str) -> None:
-        self._aborted.add(request_id)
-        if len(self._aborted) > 10000:
-            excess = len(self._aborted) - 5000
-            it = iter(self._aborted)
+        self._record_bounded_request_id(self._aborted, request_id)
+
+    @staticmethod
+    def _record_bounded_request_id(ids: set[str], request_id: str) -> None:
+        ids.add(request_id)
+        if len(ids) > 10000:
+            excess = len(ids) - 5000
+            it = iter(ids)
             to_remove = [next(it) for _ in range(excess)]
-            self._aborted -= set(to_remove)
+            ids -= set(to_remove)
 
     def _on_abort(self, request_id: str) -> None:
         self._record_aborted_request_id(request_id)

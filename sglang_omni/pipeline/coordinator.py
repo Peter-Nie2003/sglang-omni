@@ -5,7 +5,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator
 
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
@@ -448,10 +448,11 @@ class Coordinator:
             info.state = RequestState.RUNNING
 
         logger.info(
-            "Coordinator submitted req=%s to %s at %s",
+            "Coordinator submitted req=%s to %s at %s bindings=%s",
             request_id,
             self.entry_stage,
             entry_info.control_endpoint,
+            replica_bindings,
         )
 
     def _request_id_is_reserved(self, request_id: str) -> bool:
@@ -610,6 +611,12 @@ class Coordinator:
 
         info = self._requests[request_id]
 
+        # Note (wenyao): the client reads ``from_stage`` off the completion.
+        # Observability emits above keep the instance name.
+        from_stage = self._replica_topology.logical_name(msg.from_stage)
+        if from_stage != msg.from_stage:
+            msg = replace(msg, from_stage=from_stage)
+
         # Fail-fast: any terminal failure -> fail entire request
         if not msg.success:
             info.state = RequestState.FAILED
@@ -626,7 +633,6 @@ class Coordinator:
             self._requests.pop(request_id, None)
             return
 
-        from_stage = self._replica_topology.logical_name(msg.from_stage)
         expected_terminal_stages = self._expected_terminal_stages(request_id)
         if expected_terminal_stages and from_stage not in expected_terminal_stages:
             logger.debug(
@@ -699,6 +705,17 @@ class Coordinator:
                 "modality": msg.modality,
             },
         )
+        # Note (wenyao): normalize both fields -- the client falls back to
+        # ``stage_name or from_stage``. Observability emits above keep the
+        # instance name.
+        logical = self._replica_topology.logical_name(msg.from_stage)
+        stage_name = (
+            self._replica_topology.logical_name(msg.stage_name)
+            if msg.stage_name is not None
+            else msg.stage_name
+        )
+        if logical != msg.from_stage or stage_name != msg.stage_name:
+            msg = replace(msg, from_stage=logical, stage_name=stage_name)
         await self._stream_queues[request_id].put(msg)
 
     def _handle_admin_result(self, result: AdminResult) -> None:
@@ -721,7 +738,13 @@ class Coordinator:
     def _resolve_admin_stages(self, stages: Sequence[str] | None) -> list[str]:
         if stages is None:
             return sorted(self._stages)
-        resolved = list(stages)
+        # Note (wenyao): dedup preserving order so a caller passing both a
+        # logical name and one of its instances does not double-send admin ops.
+        resolved: list[str] = []
+        for name in stages:
+            for instance in self._replica_topology.instances(name):
+                if instance not in resolved:
+                    resolved.append(instance)
         unknown = sorted(set(resolved) - set(self._stages))
         if unknown:
             raise ValueError(f"Unknown admin target stage(s): {unknown}")

@@ -11,24 +11,31 @@ propagate on the message envelope.
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from sglang_omni.config.schema import StageConfig
+from sglang_omni.config.schema import (
+    REPLICA_SEPARATOR,
+    StageConfig,
+    parse_replica_instance_name,
+    replica_instance_name,
+)
 
-REPLICA_SEPARATOR = "@r"
+logger = logging.getLogger(__name__)
 
-
-def replica_instance_name(logical_name: str, replica_id: int) -> str:
-    return f"{logical_name}{REPLICA_SEPARATOR}{replica_id}"
-
-
-def parse_replica_instance_name(name: str) -> tuple[str, int | None]:
-    logical, sep, suffix = name.rpartition(REPLICA_SEPARATOR)
-    if not sep or not suffix.isdigit():
-        return name, None
-    return logical, int(suffix)
+__all__ = [
+    "REPLICA_SEPARATOR",
+    "replica_instance_name",
+    "parse_replica_instance_name",
+    "ReplicaTopology",
+    "split_replica_devices",
+    "expand_replica_stages",
+    "BindingPolicy",
+    "RoundRobinBindingPolicy",
+    "assign_replica_bindings",
+]
 
 
 @dataclass(frozen=True)
@@ -96,7 +103,7 @@ class ReplicaTopology:
 
 
 def split_replica_devices(
-    replica_devices: str | list[int] | None,
+    replica_devices: str | list[int] | int | None,
     *,
     stage_name: str,
     num_replicas: int,
@@ -141,9 +148,11 @@ def expand_replica_stages(
             continue
 
         per_replica_gpus = split_replica_devices(
-            stage_cfg.replica_devices
-            if stage_cfg.replica_devices is not None
-            else stage_cfg.gpu,
+            (
+                stage_cfg.replica_devices
+                if stage_cfg.replica_devices is not None
+                else stage_cfg.gpu
+            ),
             stage_name=stage_cfg.name,
             num_replicas=stage_cfg.num_replicas,
             tp_size=stage_cfg.tp_size,
@@ -176,6 +185,15 @@ def expand_replica_stages(
                 )
             )
         replicas[stage_cfg.name] = tuple(instance_names)
+        logger.info(
+            "Replicated stage %r -> %s (replica_devices=%s)",
+            stage_cfg.name,
+            {
+                instance: gpus
+                for instance, gpus in zip(instance_names, per_replica_gpus)
+            },
+            stage_cfg.replica_devices,
+        )
 
     return expanded, ReplicaTopology(replicas=replicas)
 

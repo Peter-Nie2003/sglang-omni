@@ -101,6 +101,7 @@ def _build_stage_groups(
             stage_cfg_by_name,
             name_map,
             process_plan,
+            replica_topology,
         )
 
         # Avoid importing stage factories in the parent process. The child
@@ -121,9 +122,7 @@ def _build_stage_groups(
             project_payload={
                 instance: dotted_path
                 for target, dotted_path in stage_cfg.project_payload.items()
-                for instance in replica_topology.instances(
-                    name_map.get(target, target)
-                )
+                for instance in replica_topology.instances(name_map.get(target, target))
             },
             coordinator_endpoint=endpoints["completion"],
             abort_endpoint=endpoints["abort"],
@@ -228,12 +227,15 @@ def _resolve_same_process_targets(
     stage_cfg_by_name: dict[str, StageConfig],
     name_map: dict[str, str],
     process_plan: ProcessTopologyPlan,
+    replica_topology: ReplicaTopology | None = None,
 ) -> set[str]:
     if stage_cfg.tp_size > 1:
         return set()
     source_process = process_plan.stage_to_process.get(stage_cfg.name)
     if source_process is None:
         return set()
+    if replica_topology is None:
+        replica_topology = ReplicaTopology()
 
     raw_targets: list[str] = []
     if stage_cfg.next is not None:
@@ -244,12 +246,13 @@ def _resolve_same_process_targets(
 
     same_process_targets: set[str] = set()
     for raw_target in raw_targets:
-        target = name_map.get(raw_target, raw_target)
-        target_cfg = stage_cfg_by_name.get(target)
-        if target_cfg is None or target_cfg.tp_size > 1:
-            continue
-        if process_plan.stage_to_process.get(target) == source_process:
-            same_process_targets.add(target)
+        logical = name_map.get(raw_target, raw_target)
+        for target in replica_topology.instances(logical):
+            target_cfg = stage_cfg_by_name.get(target)
+            if target_cfg is None or target_cfg.tp_size > 1:
+                continue
+            if process_plan.stage_to_process.get(target) == source_process:
+                same_process_targets.add(target)
     return same_process_targets
 
 
