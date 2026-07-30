@@ -139,11 +139,16 @@ class _TorchCudaApi:
 
 
 class Code2WavCudaGraphRunner:
-    """Atomic exact-shape CUDA graph runner for ``[B, Q, T]`` long codes.
+    """Exact-shape CUDA graph runner for ``[B, Q, T]`` long codes.
 
     One instance is permanently bound to one model, CUDA device, quantizer
-    count, ``torch.long`` input dtype, and owner process. Build failures disable
-    the complete runner and leave no partial graph matrix published.
+    count, ``torch.long`` input dtype, and owner process. ``batch_size == 1``
+    keys form an atomic tier with the original semantics: any failure there
+    disables the complete runner and leaves no partial matrix published.
+    ``batch_size > 1`` keys are best-effort — captured largest-first into a
+    separate pool, published as the greedy prefix that fits the remaining
+    memory budget, so an oversized batched graph can never take down the
+    single-request tier that serving already relies on.
     """
 
     _WARMUP_ITERATIONS = 3
@@ -165,10 +170,13 @@ class Code2WavCudaGraphRunner:
         if self._num_quantizers <= 0:
             raise ValueError("Code2Wav CUDA graphs require a positive quantizer count")
         self._graph_keys = graph_keys
+        self._tier0_keys = tuple(k for k in graph_keys if k.batch_size == 1)
+        self._tier1_keys = tuple(k for k in graph_keys if k.batch_size > 1)
         self._owner_pid = os.getpid()
         self._cuda = cuda_api
         self._graphs: dict[GraphKey, _CapturedGraph] = {}
         self._pool: Any | None = None
+        self._tier1_pool: Any | None = None
         self._capture_stream: Any | None = None
         self._enabled = False
         self._disable_reason: str | None = None
@@ -233,7 +241,7 @@ class Code2WavCudaGraphRunner:
 
                 pool = self._cuda.graph_pool_handle()
                 capture_stream = self._cuda.new_stream(self._device)
-                for key in reversed(self._graph_keys):
+                for key in self._priority_order(self._tier0_keys):
                     self._build_stats["attempted_graph_count"] += 1
                     temporary[key] = self._capture_graph(
                         key,
@@ -284,13 +292,165 @@ class Code2WavCudaGraphRunner:
 
         self._pool = pool
         self._capture_stream = capture_stream
-        self._graphs = {key: temporary[key] for key in self._graph_keys}
+        published = {key: temporary[key] for key in self._tier0_keys}
+        if self._tier1_keys:
+            published.update(
+                self._build_tier1(
+                    before=before,
+                    graph_budget=self._memory_stats["graph_budget_bytes"],
+                    stream=capture_stream,
+                )
+            )
+        self._graphs = {
+            key: published[key] for key in self._graph_keys if key in published
+        }
         self._build_stats["published_graph_count"] = len(self._graphs)
         self._enabled = True
         logger.info(
             "Code2Wav CUDA graph runner published %d exact graphs on %s",
             len(self._graphs),
             self._device,
+        )
+
+    # Retries re-capture a strictly smaller key set, so this bound is only a
+    # backstop against footprint measurements that never stabilize.
+    _TIER1_MAX_ATTEMPTS = 6
+
+    def _build_tier1(
+        self,
+        *,
+        before: dict[str, int],
+        graph_budget: int,
+        stream: Any,
+    ) -> dict[GraphKey, _CapturedGraph]:
+        """Capture the batched tier as the greedy prefix fitting the budget.
+
+        The keys are attempted largest-first so the pool's peak blocks are laid
+        down once and every later capture reuses them. Pool memory is only
+        reclaimable as a whole, which makes the pool the retry unit: on a
+        budget violation the attempt is dropped and re-captured with the
+        violating key (and everything after it) excluded. A violation by the
+        very first key excludes its entire batch-size class instead — same
+        batch at shorter frames cannot be assumed to fit. Non-capacity capture
+        failures abandon the tier outright: shrinking cannot fix a correctness
+        problem, and the atomic tier stays published either way.
+        """
+        info: dict[str, Any] = {
+            "attempted_key_count": len(self._tier1_keys),
+            "published_key_count": 0,
+            "attempts": 0,
+            "skipped_keys": [],
+            "disable_reason": None,
+            "per_key_footprint_bytes": {},
+        }
+        self._memory_stats["tier1"] = info
+
+        remaining = list(self._priority_order(self._tier1_keys))
+        published: dict[GraphKey, _CapturedGraph] = {}
+        pool: Any | None = None
+        while remaining and info["attempts"] < self._TIER1_MAX_ATTEMPTS:
+            info["attempts"] += 1
+            temporary: dict[GraphKey, _CapturedGraph] = {}
+            pool = self._cuda.graph_pool_handle()
+            violation_index: int | None = None
+            error_reason: str | None = None
+            try:
+                with self._cuda.device_context(self._device):
+                    previous_footprint = self._footprint_since(before)
+                    for index, key in enumerate(remaining):
+                        self._build_stats["attempted_graph_count"] += 1
+                        temporary[key] = self._capture_graph(
+                            key,
+                            pool=pool,
+                            stream=stream,
+                        )
+                        self._cuda.synchronize(self._device)
+                        footprint = self._footprint_since(before)
+                        info["per_key_footprint_bytes"][self._key_name(key)] = (
+                            footprint - previous_footprint
+                        )
+                        if footprint > graph_budget:
+                            violation_index = index
+                            break
+                        previous_footprint = footprint
+            except torch.OutOfMemoryError:
+                violation_index = len(temporary)
+            except Exception as exc:
+                error_reason = (
+                    str(exc)
+                    if isinstance(exc, _BuildFailure)
+                    else f"capture_failed: {type(exc).__name__}: {exc}"
+                )
+
+            if violation_index is None and error_reason is None:
+                published = temporary
+                break
+
+            temporary.clear()
+            pool = None
+            gc.collect()
+            try:
+                with self._cuda.device_context(self._device):
+                    self._cuda.empty_cache()
+            except Exception as cleanup_exc:
+                logger.warning(
+                    "Code2Wav tier-1 graph rollback cleanup failed: %s",
+                    cleanup_exc,
+                )
+            if error_reason is not None:
+                info["disable_reason"] = error_reason
+                break
+            if violation_index > 0:
+                remaining = remaining[:violation_index]
+            else:
+                oversized_batch = remaining[0].batch_size
+                remaining = [
+                    key for key in remaining if key.batch_size < oversized_batch
+                ]
+
+        if published:
+            self._tier1_pool = pool
+        info["published_key_count"] = len(published)
+        info["skipped_keys"] = [
+            {"batch_size": key.batch_size, "frames": key.frames}
+            for key in self._tier1_keys
+            if key not in published
+        ]
+        if info["skipped_keys"]:
+            logger.warning(
+                "Code2Wav tier-1 graphs published %d/%d keys; skipped: %s",
+                len(published),
+                len(self._tier1_keys),
+                info["skipped_keys"],
+            )
+        return published
+
+    def _footprint_since(self, before: dict[str, int]) -> int:
+        snapshot = self._cuda.memory_stats(self._device)
+        return max(
+            0,
+            snapshot["allocated_bytes"] - before["allocated_bytes"],
+            snapshot["reserved_bytes"] - before["reserved_bytes"],
+        )
+
+    @staticmethod
+    def _priority_order(keys: tuple[GraphKey, ...]) -> tuple[GraphKey, ...]:
+        # Largest first: the biggest graph lays down the pool's peak blocks so
+        # later captures reuse them instead of growing the pool.
+        return tuple(sorted(keys, key=lambda k: (k.batch_size, k.frames), reverse=True))
+
+    @staticmethod
+    def _key_name(key: GraphKey) -> str:
+        return f"b{key.batch_size}t{key.frames}"
+
+    def available_batch_sizes(self, frames: int) -> tuple[int, ...]:
+        """Batch sizes with a published graph for this window length, largest
+        first; the scheduler decomposes coalesced batches against this."""
+        return tuple(
+            sorted(
+                {key.batch_size for key in self._graphs if key.frames == int(frames)},
+                reverse=True,
+            )
         )
 
     def _capture_graph(
@@ -380,6 +540,7 @@ class Code2WavCudaGraphRunner:
         self._graphs.clear()
         temporary.clear()
         self._pool = None
+        self._tier1_pool = None
         self._capture_stream = None
         self._enabled = False
         self._disable_reason = reason
@@ -482,6 +643,7 @@ class Code2WavCudaGraphRunner:
     def _disable_runtime(self, reason: str) -> None:
         self._graphs.clear()
         self._pool = None
+        self._tier1_pool = None
         self._capture_stream = None
         self._enabled = False
         self._disable_reason = reason

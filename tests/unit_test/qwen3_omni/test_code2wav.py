@@ -161,28 +161,50 @@ def test_qwen_code2wav_enabled_factory_rejects_missing_typed_budget_before_load(
     assert load_calls == 0
 
 
-def test_qwen_code2wav_factory_rejects_batching_with_cuda_graph_before_load(
+def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
     monkeypatch,
 ) -> None:
-    load_calls = 0
+    captured_keys: list[tuple] = []
 
-    def _load(*args, **kwargs):
-        nonlocal load_calls
-        load_calls += 1
-        return _FactoryModel()
+    class _RecordingRunner:
+        @staticmethod
+        def build(model, **kwargs):
+            captured_keys.append(tuple(kwargs["graph_keys"]))
+            runner = object.__new__(code2wav_scheduler.Code2WavCudaGraphRunner)
+            runner.stats = lambda: {"enabled": False, "disable_reason": "test"}
+            return runner
 
-    monkeypatch.setattr(code2wav_scheduler, "load_code2wav_model", _load)
+    monkeypatch.setattr(
+        code2wav_scheduler,
+        "load_code2wav_model",
+        lambda *args, **kwargs: _FactoryModel(),
+    )
+    monkeypatch.setattr(
+        code2wav_scheduler,
+        "Code2WavCudaGraphRunner",
+        _RecordingRunner,
+    )
 
-    with pytest.raises(ValueError, match="cannot be enabled together"):
-        code2wav_scheduler.create_code2wav_scheduler(
-            "dummy",
-            device="cuda:0",
-            enable_batching=True,
-            enable_cuda_graph=True,
-            total_gpu_memory_fraction=0.02,
-        )
+    scheduler = code2wav_scheduler.create_code2wav_scheduler(
+        "dummy",
+        device="cuda:0",
+        enable_batching=True,
+        batch_ceiling=4,
+        enable_cuda_graph=True,
+        total_gpu_memory_fraction=0.02,
+    )
 
-    assert load_calls == 0
+    assert scheduler._enable_batching is True
+    assert scheduler._cuda_graph_runner is not None
+    (keys,) = captured_keys
+    frames = (10, 20, 30, 35)
+    assert keys == tuple(
+        code2wav_scheduler.GraphKey(batch_size=1, frames=f) for f in frames
+    ) + tuple(
+        code2wav_scheduler.GraphKey(batch_size=b, frames=f)
+        for b in (2, 4)
+        for f in frames
+    )
 
 
 @pytest.mark.parametrize(
