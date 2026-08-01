@@ -34,6 +34,7 @@ def _visible_device_count() -> int | None:
     except Exception:
         return None
 
+
 # PyZMQ checks the filesystem path after ``ipc://`` against this budget.
 _IPC_SUN_PATH_BUDGET = getattr(zmq, "IPC_PATH_MAX_LEN", 100)
 _TEMPFILE_RANDOM_SUFFIX_LEN = 8

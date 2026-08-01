@@ -218,7 +218,9 @@ def validate_device_assignment(
         ids = [gpu] if isinstance(gpu, int) else [int(part) for part in gpu]
         for gpu_id in ids:
             if gpu_id < 0:
-                raise ValueError(f"Stage {stage_cfg.name!r}: GPU id {gpu_id} is negative")
+                raise ValueError(
+                    f"Stage {stage_cfg.name!r}: GPU id {gpu_id} is negative"
+                )
             if device_count is not None and gpu_id >= device_count:
                 raise ValueError(
                     f"Stage {stage_cfg.name!r}: GPU id {gpu_id} out of range; "
