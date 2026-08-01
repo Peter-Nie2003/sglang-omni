@@ -121,11 +121,9 @@ def split_replica_devices(
 
     if len(ids) == num_replicas * tp_size:
         return [ids[r * tp_size : (r + 1) * tp_size] for r in range(num_replicas)]
-    if len(ids) == tp_size:
-        return [[gpu_id + r * tp_size for gpu_id in ids] for r in range(num_replicas)]
     raise ValueError(
         f"Stage {stage_name!r}: replica_devices has {len(ids)} id(s); expected "
-        f"{tp_size} (template) or {num_replicas * tp_size} (pool) for "
+        f"{num_replicas * tp_size} (one per replica x tp rank) for "
         f"num_replicas={num_replicas}, tp_size={tp_size}"
     )
 
@@ -147,12 +145,15 @@ def expand_replica_stages(
             expanded.append(stage_cfg)
             continue
 
+        if stage_cfg.replica_devices is None and stage_cfg.gpu is not None:
+            raise ValueError(
+                f"Stage {stage_cfg.name!r}: num_replicas="
+                f"{stage_cfg.num_replicas} on a GPU stage requires explicit "
+                f"replica_devices with "
+                f"{stage_cfg.num_replicas * stage_cfg.tp_size} GPU id(s)"
+            )
         per_replica_gpus = split_replica_devices(
-            (
-                stage_cfg.replica_devices
-                if stage_cfg.replica_devices is not None
-                else stage_cfg.gpu
-            ),
+            stage_cfg.replica_devices,
             stage_name=stage_cfg.name,
             num_replicas=stage_cfg.num_replicas,
             tp_size=stage_cfg.tp_size,
@@ -196,6 +197,37 @@ def expand_replica_stages(
         )
 
     return expanded, ReplicaTopology(replicas=replicas)
+
+
+def validate_device_assignment(
+    stages_cfg: list[StageConfig],
+    *,
+    device_count: int | None,
+) -> None:
+    """Fail fast on GPU ids that cannot exist on this host.
+
+    Ids are indices into the launcher's visible devices, so the caller must
+    pass ``device_count`` from the launcher process. ``None`` (CUDA
+    unavailable or count unknown) skips the range check but still rejects
+    negative and duplicate ids.
+    """
+    for stage_cfg in stages_cfg:
+        gpu = stage_cfg.gpu
+        if gpu is None:
+            continue
+        ids = [gpu] if isinstance(gpu, int) else [int(part) for part in gpu]
+        for gpu_id in ids:
+            if gpu_id < 0:
+                raise ValueError(f"Stage {stage_cfg.name!r}: GPU id {gpu_id} is negative")
+            if device_count is not None and gpu_id >= device_count:
+                raise ValueError(
+                    f"Stage {stage_cfg.name!r}: GPU id {gpu_id} out of range; "
+                    f"only {device_count} visible device(s)"
+                )
+        if len(set(ids)) != len(ids):
+            raise ValueError(
+                f"Stage {stage_cfg.name!r}: duplicate GPU id in tp group {ids}"
+            )
 
 
 class BindingPolicy(Protocol):

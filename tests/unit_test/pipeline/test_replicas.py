@@ -12,6 +12,7 @@ from sglang_omni.pipeline.replicas import (
     parse_replica_instance_name,
     replica_instance_name,
     split_replica_devices,
+    validate_device_assignment,
 )
 
 
@@ -45,15 +46,21 @@ class TestSplitReplicaDevices:
             "0,1,2,3", stage_name="s", num_replicas=2, tp_size=2
         ) == [[0, 1], [2, 3]]
 
-    def test_template_mode_tp1(self):
+    def test_non_contiguous_pool(self):
         assert split_replica_devices(
-            "0", stage_name="s", num_replicas=4, tp_size=1
-        ) == [[0], [1], [2], [3]]
+            "1,5", stage_name="s", num_replicas=2, tp_size=1
+        ) == [[1], [5]]
 
-    def test_template_mode_tp2(self):
+    def test_same_gpu_pool(self):
         assert split_replica_devices(
-            "0,1", stage_name="s", num_replicas=2, tp_size=2
-        ) == [[0, 1], [2, 3]]
+            "0,0", stage_name="s", num_replicas=2, tp_size=1
+        ) == [[0], [0]]
+
+    def test_partial_list_raises(self):
+        with pytest.raises(ValueError, match="expected 4"):
+            split_replica_devices("0", stage_name="s", num_replicas=4, tp_size=1)
+        with pytest.raises(ValueError, match="expected 4"):
+            split_replica_devices("0,1", stage_name="s", num_replicas=2, tp_size=2)
 
     def test_list_input(self):
         assert split_replica_devices(
@@ -102,10 +109,47 @@ class TestExpandReplicaStages:
         assert r0.next == "code2wav" and r0.stream_to == ["code2wav"]
         assert topo.to_dict() == {"talker_ar": ["talker_ar@r0", "talker_ar@r1"]}
 
-    def test_gpu_field_fallback_as_template(self):
+    def test_gpu_stage_requires_explicit_replica_devices(self):
         stages = [_stage("s", gpu=1, num_replicas=2)]
-        expanded, _ = expand_replica_stages(stages)
-        assert [s.gpu for s in expanded] == [1, 2]
+        with pytest.raises(ValueError, match="replica_devices"):
+            expand_replica_stages(stages)
+
+    def test_cpu_stage_needs_no_devices(self):
+        stages = [_stage("s", num_replicas=2)]
+        expanded, topo = expand_replica_stages(stages)
+        assert [s.gpu for s in expanded] == [None, None]
+        assert topo.to_dict() == {"s": ["s@r0", "s@r1"]}
+
+
+class TestValidateDeviceAssignment:
+    def test_valid_ids_pass(self):
+        stages, _ = expand_replica_stages(
+            [_stage("s", gpu=1, num_replicas=2, replica_devices="1,2")]
+        )
+        validate_device_assignment(stages, device_count=4)
+
+    def test_out_of_range_id_raises(self):
+        stages, _ = expand_replica_stages(
+            [_stage("s", gpu=3, num_replicas=2, replica_devices="3,4")]
+        )
+        with pytest.raises(ValueError, match="GPU id 4"):
+            validate_device_assignment(stages, device_count=4)
+
+    def test_negative_id_raises(self):
+        with pytest.raises(ValueError, match="GPU id -1"):
+            validate_device_assignment([_stage("s", gpu=-1)], device_count=4)
+
+    def test_duplicate_id_within_tp_group_raises(self):
+        with pytest.raises(ValueError, match="duplicate"):
+            validate_device_assignment(
+                [_stage("s", gpu=[0, 0], tp_size=2)], device_count=4
+            )
+
+    def test_cpu_stages_are_skipped(self):
+        validate_device_assignment([_stage("s")], device_count=0)
+
+    def test_unknown_device_count_skips_range_check(self):
+        validate_device_assignment([_stage("s", gpu=7)], device_count=None)
 
 
 class TestReplicaTopology:
