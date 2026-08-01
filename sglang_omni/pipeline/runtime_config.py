@@ -15,9 +15,24 @@ import zmq
 from sglang_omni.config.placement import StagePlacementPlan, build_stage_placement_plan
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.config.topology import ProcessTopologyPlan, build_process_topology_plan
-from sglang_omni.pipeline.replicas import ReplicaTopology, expand_replica_stages
+from sglang_omni.pipeline.replicas import (
+    ReplicaTopology,
+    expand_replica_stages,
+    validate_device_assignment,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _visible_device_count() -> int | None:
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        return torch.cuda.device_count()
+    except Exception:
+        return None
 
 # PyZMQ checks the filesystem path after ``ipc://`` against this budget.
 _IPC_SUN_PATH_BUDGET = getattr(zmq, "IPC_PATH_MAX_LEN", 100)
@@ -99,6 +114,7 @@ def prepare_pipeline_runtime(
     """Prepare fused stages, endpoint allocation, and process topology."""
     stages_cfg, name_map, entry_stage = config.apply_fusion()
     stages_cfg, replica_topology = expand_replica_stages(stages_cfg)
+    validate_device_assignment(stages_cfg, device_count=_visible_device_count())
     runtime_dir = ipc_runtime_dir
     if runtime_dir is None:
         runtime_dir = create_ipc_runtime_dir(config, stages=stages_cfg)
