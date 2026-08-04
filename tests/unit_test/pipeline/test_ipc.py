@@ -319,8 +319,15 @@ async def test_mp_runner_stop_cleans_runtime_dir(
             entry_stage: str,
             terminal_stages: list[str] | None = None,
             terminal_stages_resolver=None,
+            replica_topology=None,
         ) -> None:
-            del abort_endpoint, entry_stage, terminal_stages, terminal_stages_resolver
+            del (
+                abort_endpoint,
+                entry_stage,
+                terminal_stages,
+                terminal_stages_resolver,
+                replica_topology,
+            )
             self.control_plane = SimpleNamespace(
                 completion_endpoint=completion_endpoint
             )
