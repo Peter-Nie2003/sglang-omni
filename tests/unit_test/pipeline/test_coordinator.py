@@ -852,8 +852,9 @@ def test_coordinator_normalizes_replica_instance_name_on_completion(
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
         queue: asyncio.Queue = asyncio.Queue()
-        coordinator._stream_queues["req-1"] = queue
-        await coordinator._submit_request("req-1", {"text": "hello"})
+        await coordinator._submit_request(
+            "req-1", {"text": "hello"}, stream_queue=queue
+        )
 
         await coordinator._handle_completion(
             CompleteMessage(
