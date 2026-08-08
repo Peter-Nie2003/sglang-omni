@@ -185,6 +185,7 @@ class TalkerPrefillBuilder:
         self._device = model.model.codec_embedding.weight.device
         self._dtype = model.activation_dtype
         self._thinker_embed_cache: dict[int, torch.Tensor] = {}
+        self._projected_text_cache: dict[int, torch.Tensor] = {}
         self._tts_special_cache: (
             tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None
         ) = None
@@ -303,16 +304,21 @@ class TalkerPrefillBuilder:
     def project_assistant_chunk(self, chunk: Any) -> torch.Tensor:
         metadata = chunk.metadata or {}
         token_id = metadata.get("token_id")
-        if token_id is not None:
-            chunk_tensor = self._load_prompt_token_embeddings(
-                torch.tensor([int(token_id)], dtype=torch.long)
-            )
-        else:
+        if token_id is None:
             chunk_tensor = chunk.data.to(
                 device=self._device, dtype=self._dtype
             ).unsqueeze(0)
-        projected = self._model.text_projection(chunk_tensor)
-        return projected[0].detach()
+            return self._model.text_projection(chunk_tensor)[0].detach()
+        return self._projected_text_row(int(token_id))
+
+    def _projected_text_row(self, token_id: int) -> torch.Tensor:
+        row = self._projected_text_cache.get(token_id)
+        if row is None:
+            row = self._model.text_projection(
+                self._thinker_embed_row(token_id).unsqueeze(0)
+            )[0].detach()
+            self._projected_text_cache[token_id] = row
+        return row
 
     def build_multimodal_mask(self, token_ids: torch.Tensor) -> torch.Tensor:
         mask = torch.zeros(token_ids.shape[0], dtype=torch.bool, device=self._device)
@@ -384,19 +390,21 @@ class TalkerPrefillBuilder:
 
         return prompt_ids, prompt_embed, prompt_hidden, prompt_model_inputs
 
+    def _thinker_embed_row(self, token_id: int) -> torch.Tensor:
+        row = self._thinker_embed_cache.get(token_id)
+        if row is None:
+            row = (
+                load_thinker_embedding_rows(self._model_path, [token_id])
+                .to(device=self._device, dtype=self._dtype)[0]
+                .detach()
+                .clone()
+            )
+            self._thinker_embed_cache[token_id] = row
+        return row
+
     def _load_prompt_token_embeddings(self, token_ids: torch.Tensor) -> torch.Tensor:
-        if token_ids.numel() == 1:
-            token_id = int(token_ids.item())
-            row = self._thinker_embed_cache.get(token_id)
-            if row is None:
-                row = (
-                    load_thinker_embedding_rows(self._model_path, [token_id])
-                    .to(device=self._device, dtype=self._dtype)[0]
-                    .detach()
-                    .clone()
-                )
-                self._thinker_embed_cache[token_id] = row
-            return row.unsqueeze(0).clone()
+        if token_ids.numel() == 1 and token_ids.device.type == "cpu":
+            return self._thinker_embed_row(int(token_ids.item())).unsqueeze(0).clone()
         token_ids = token_ids.to(dtype=torch.long).view(-1).cpu()
         unique_ids, inverse = torch.unique(token_ids, sorted=False, return_inverse=True)
         missing_ids = [
