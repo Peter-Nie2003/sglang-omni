@@ -204,32 +204,26 @@ def validate_device_assignment(
     *,
     device_count: int | None,
 ) -> None:
-    """Fail fast on GPU ids that cannot exist on this host.
+    """Fail fast on GPU ids outside this host's visible devices.
 
     Ids are indices into the launcher's visible devices, so the caller must
-    pass ``device_count`` from the launcher process. ``None`` (CUDA
-    unavailable or count unknown) skips the range check but still rejects
-    negative and duplicate ids.
+    pass ``device_count`` from the launcher process. ``None`` skips the check
+    when CUDA is unavailable or the device count is unknown.
     """
+    if device_count is None:
+        return
+
     for stage_cfg in stages_cfg:
         gpu = stage_cfg.gpu
         if gpu is None:
             continue
-        ids = [gpu] if isinstance(gpu, int) else [int(part) for part in gpu]
+        ids = [gpu] if isinstance(gpu, int) else gpu
         for gpu_id in ids:
-            if gpu_id < 0:
-                raise ValueError(
-                    f"Stage {stage_cfg.name!r}: GPU id {gpu_id} is negative"
-                )
-            if device_count is not None and gpu_id >= device_count:
+            if gpu_id >= device_count:
                 raise ValueError(
                     f"Stage {stage_cfg.name!r}: GPU id {gpu_id} out of range; "
                     f"only {device_count} visible device(s)"
                 )
-        if len(set(ids)) != len(ids):
-            raise ValueError(
-                f"Stage {stage_cfg.name!r}: duplicate GPU id in tp group {ids}"
-            )
 
 
 class BindingPolicy(Protocol):

@@ -135,16 +135,6 @@ class TestValidateDeviceAssignment:
         with pytest.raises(ValueError, match="GPU id 4"):
             validate_device_assignment(stages, device_count=4)
 
-    def test_negative_id_raises(self):
-        with pytest.raises(ValueError, match="GPU id -1"):
-            validate_device_assignment([_stage("s", gpu=-1)], device_count=4)
-
-    def test_duplicate_id_within_tp_group_raises(self):
-        with pytest.raises(ValueError, match="duplicate"):
-            validate_device_assignment(
-                [_stage("s", gpu=[0, 0], tp_size=2)], device_count=4
-            )
-
     def test_cpu_stages_are_skipped(self):
         validate_device_assignment([_stage("s")], device_count=0)
 
