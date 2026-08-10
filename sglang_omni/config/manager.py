@@ -165,20 +165,17 @@ def _apply_stage_overrides(
         if not isinstance(override, dict):
             raise ValueError(f"stage_overrides.{stage_name} must be a mapping")
 
-        supported = {"runtime", "num_replicas", "replica_devices"}
+        supported = {"runtime"}
         unsupported = sorted(set(override) - supported)
         if unsupported:
             raise ValueError(
                 f"stage_overrides.{stage_name} supports only "
                 f"{sorted(supported)} overrides; got unsupported keys "
-                f"{unsupported}"
+                f"{unsupported}. Replica policy is declared per process under "
+                "the top-level 'processes' mapping"
             )
 
         stage = stage_by_name[stage_name]
-        for scalar_key in ("num_replicas", "replica_devices"):
-            if scalar_key in override:
-                stage[scalar_key] = override[scalar_key]
-
         if "runtime" not in override:
             continue
         runtime_override = override["runtime"]

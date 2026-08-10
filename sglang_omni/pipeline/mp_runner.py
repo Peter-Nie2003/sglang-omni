@@ -448,6 +448,7 @@ class MultiProcessPipelineRunner:
                 terminal_stages=self._config.terminal_stages or None,
                 terminal_stages_resolver=terminal_stages_resolver,
                 replica_topology=prep.replica_topology,
+                logical_process_plan=prep.logical_process_plan,
             )
             await self._coordinator.start()
             self._completion_task = asyncio.create_task(

@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator
 
+from sglang_omni.config.topology import LogicalProcessPlan
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
 from sglang_omni.pipeline.replicas import (
     BindingPolicy,
@@ -65,6 +66,7 @@ class Coordinator:
             Callable[[OmniRequest], list[str] | None] | None
         ) = None,
         replica_topology: ReplicaTopology | None = None,
+        logical_process_plan: LogicalProcessPlan | None = None,
         binding_policy: BindingPolicy | None = None,
     ):
         """Initialize coordinator.
@@ -72,9 +74,12 @@ class Coordinator:
         Args:
             completion_endpoint: ZMQ endpoint to receive completions
             abort_endpoint: ZMQ endpoint for abort broadcasts
-            entry_stage: Name of the entry stage for new requests
+            entry_stage: Logical name of the entry stage for new requests
             terminal_stages: Terminal stage names. When multiple are given,
                 the coordinator waits for all to complete before resolving.
+            replica_topology: Logical stage to expanded instance mapping.
+            logical_process_plan: Compiled Process topology; the coordinator
+                selects one replica per replicated Process from it.
         """
         self.entry_stage = entry_stage
         self._terminal_stages: set[str] = (
@@ -83,6 +88,9 @@ class Coordinator:
         self._terminal_stages_resolver = terminal_stages_resolver
         self._partial_results: dict[str, dict[str, Any]] = {}
         self._replica_topology = replica_topology or ReplicaTopology()
+        self._logical_process_plan = logical_process_plan or LogicalProcessPlan(
+            processes=(), stage_to_process={}
+        )
         self._binding_policy = binding_policy or RoundRobinBindingPolicy()
 
         # Control plane
@@ -392,9 +400,6 @@ class Coordinator:
         if self._request_id_is_reserved(request_id):
             raise ValueError(f"Request {request_id} already exists")
 
-        if self.entry_stage not in self._stages:
-            raise ValueError(f"Entry stage {self.entry_stage} not registered")
-
         if not isinstance(request, OmniRequest):
             request = OmniRequest(inputs=request)
 
@@ -427,13 +432,20 @@ class Coordinator:
         )
 
         replica_bindings = assign_replica_bindings(
-            self._replica_topology, self._binding_policy, request_id
+            self._logical_process_plan, self._binding_policy, request_id
         )
 
-        # Submit to entry stage
-        entry_info = self._stages[self.entry_stage]
+        bindings = replica_bindings or {}
+        entry_instance = (
+            self._replica_topology.resolve(
+                self.entry_stage, bindings[self.entry_stage]
+            )
+            if self._replica_topology.is_replicated(self.entry_stage)
+            else self.entry_stage
+        )
+        entry_info = self._stages[entry_instance]
         await self.control_plane.submit_to_stage(
-            self.entry_stage,
+            entry_instance,
             entry_info.control_endpoint,
             SubmitMessage(
                 request_id=request_id,
@@ -450,7 +462,7 @@ class Coordinator:
         logger.info(
             "Coordinator submitted req=%s to %s at %s bindings=%s",
             request_id,
-            self.entry_stage,
+            entry_instance,
             entry_info.control_endpoint,
             replica_bindings,
         )
