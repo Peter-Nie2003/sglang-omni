@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 REPLICA_SEPARATOR = "@r"
 
@@ -139,6 +139,57 @@ class PlacementConfig(BaseModel):
             )
 
 
+# Note (kaige): validation follows the context each layer owns. StageConfig and
+# ProcessConfig check object-local fields, PipelineConfig checks declarations
+# and references, and logical-process compilation checks derived topology once
+# before workers start. Runtime only consumes the compiled plans.
+class ProcessConfig(BaseModel):
+    """Replica policy for one logical process.
+
+    Keyed by Process Name in ``PipelineConfig.processes``. Member stages come
+    from ``StageConfig.process``, so this never repeats them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    num_replicas: int = 1
+    replica_devices: list[int] | None = None
+
+    @field_validator("replica_devices", mode="before")
+    @classmethod
+    def _parse_replica_devices(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return [value]
+        if isinstance(value, str):
+            parts = [part.strip() for part in value.split(",")]
+            if any(not part for part in parts):
+                raise ValueError("processes.replica_devices must contain GPU ids")
+            try:
+                return [int(part) for part in parts]
+            except ValueError as exc:
+                raise ValueError(
+                    "processes.replica_devices must contain only integer GPU ids"
+                ) from exc
+        return value
+
+    @field_validator("replica_devices")
+    @classmethod
+    def _validate_replica_devices(cls, value: list[int] | None) -> list[int] | None:
+        if value is None:
+            return None
+        if not value:
+            raise ValueError("processes.replica_devices must not be empty")
+        if any(device_id < 0 for device_id in value):
+            raise ValueError("processes.replica_devices GPU ids must be >= 0")
+        return value
+
+    def model_post_init(self, __context: Any = None) -> None:
+        if self.num_replicas < 1:
+            raise ValueError("processes.num_replicas must be >= 1")
+
+
 class StageConfig(BaseModel):
     """Single pipeline stage configuration.
 
@@ -230,6 +281,25 @@ class StageConfig(BaseModel):
             parallelism_set and not tp_size_set and self.tp_size != self.parallelism.tp
         ):
             self.tp_size = self.parallelism.tp
+
+        gpu = self.gpu
+        if gpu is None:
+            if self.tp_size > 1:
+                raise ValueError(
+                    f"Stage {self.name!r}: gpu is required when tp_size={self.tp_size}"
+                )
+            return
+
+        gpu_ids = [gpu] if isinstance(gpu, int) else gpu
+        if len(gpu_ids) != self.tp_size:
+            raise ValueError(
+                f"Stage {self.name!r}: gpu has {len(gpu_ids)} entries "
+                f"but tp_size={self.tp_size}"
+            )
+        if any(gpu_id < 0 for gpu_id in gpu_ids):
+            raise ValueError(f"Stage {self.name!r}: GPU ids must be >= 0")
+        if len(set(gpu_ids)) != len(gpu_ids):
+            raise ValueError(f"Stage {self.name!r}: GPU ids must be unique")
 
 
 class PipelineConfig(BaseModel):
@@ -405,18 +475,6 @@ class PipelineConfig(BaseModel):
             if s.stream_done_to_fn is not None and not s.stream_to:
                 raise ValueError(
                     f"Stage {s.name!r} cannot set stream_done_to_fn without stream_to"
-                )
-            if s.tp_size < 1:
-                raise ValueError(f"Stage {s.name!r} must have tp_size >= 1")
-            if s.parallelism.tp != s.tp_size:
-                raise ValueError(
-                    f"Stage {s.name!r}: tp_size={s.tp_size} conflicts with "
-                    f"parallelism.tp={s.parallelism.tp}"
-                )
-            if isinstance(s.gpu, list) and len(s.gpu) != s.tp_size:
-                raise ValueError(
-                    f"Stage {s.name!r}: gpu has {len(s.gpu)} entries "
-                    f"but tp_size={s.tp_size}"
                 )
             if s.wait_for:
                 if not s.merge_fn:
