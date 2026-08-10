@@ -122,7 +122,6 @@ def test_runner_specs_wire_routes_overrides_aggregation_and_streams(tmp_path) ->
             config,
             ctx=FakeMpContext(),
             stages_cfg=prep.stages_cfg,
-            name_map=prep.name_map,
             endpoints=prep.endpoints,
             placement_plan=prep.placement_plan,
             process_plan=prep.process_plan,
@@ -182,7 +181,6 @@ def test_runner_specs_defer_factory_signature_import_to_child(
             config,
             ctx=FakeMpContext(),
             stages_cfg=prep.stages_cfg,
-            name_map=prep.name_map,
             endpoints=prep.endpoints,
             placement_plan=prep.placement_plan,
             process_plan=prep.process_plan,
@@ -214,7 +212,6 @@ def test_runner_specs_wire_same_process_targets_only_for_local_edges() -> None:
         config,
         ctx=FakeMpContext(),
         stages_cfg=prep.stages_cfg,
-        name_map=prep.name_map,
         endpoints=prep.endpoints,
         placement_plan=prep.placement_plan,
         process_plan=prep.process_plan,
@@ -275,7 +272,6 @@ def test_runner_specs_expose_process_total_in_construction_order(
             config,
             ctx=FakeMpContext(),
             stages_cfg=prep.stages_cfg,
-            name_map=prep.name_map,
             endpoints=prep.endpoints,
             placement_plan=prep.placement_plan,
             process_plan=prep.process_plan,
@@ -308,11 +304,6 @@ def test_fused_stages_compile_to_same_process_local_edges() -> None:
         "encoder",
         "decode",
     ]
-    assert prep.name_map == {
-        "preprocess": "preprocess",
-        "encoder": "encoder",
-        "decode": "decode",
-    }
     assert prep.entry_stage == "preprocess"
     assert prep.process_plan.stage_to_process["preprocess"] == (
         prep.process_plan.stage_to_process["encoder"]
@@ -325,7 +316,6 @@ def test_fused_stages_compile_to_same_process_local_edges() -> None:
         config,
         ctx=FakeMpContext(),
         stages_cfg=prep.stages_cfg,
-        name_map=prep.name_map,
         endpoints=prep.endpoints,
         placement_plan=prep.placement_plan,
         process_plan=prep.process_plan,
@@ -349,7 +339,6 @@ def test_runner_specs_wire_same_process_stream_targets() -> None:
         config,
         ctx=FakeMpContext(),
         stages_cfg=prep.stages_cfg,
-        name_map=prep.name_map,
         endpoints=prep.endpoints,
         placement_plan=prep.placement_plan,
         process_plan=prep.process_plan,
@@ -376,7 +365,6 @@ def test_runner_specs_wire_direct_cuda_ipc_payload_disable_flag() -> None:
         config,
         ctx=FakeMpContext(),
         stages_cfg=prep.stages_cfg,
-        name_map=prep.name_map,
         endpoints=prep.endpoints,
         placement_plan=prep.placement_plan,
         process_plan=prep.process_plan,
@@ -404,7 +392,6 @@ def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:
         _resolve_same_process_targets(
             preprocess,
             stage_cfg_by_name,
-            prep.name_map,
             prep.process_plan,
         )
         == set()
@@ -413,7 +400,6 @@ def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:
         _resolve_same_process_targets(
             thinker,
             stage_cfg_by_name,
-            prep.name_map,
             prep.process_plan,
         )
         == set()
@@ -448,7 +434,6 @@ def test_runner_wires_same_process_targets_across_colocated_replicas() -> None:
         return _resolve_same_process_targets(
             by_name[name],
             by_name,
-            prep.name_map,
             prep.process_plan,
             prep.replica_topology,
         )
@@ -503,7 +488,6 @@ def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(tmp_path) -> N
             config,
             ctx=FakeMpContext(),
             stages_cfg=prep.stages_cfg,
-            name_map=prep.name_map,
             endpoints=prep.endpoints,
             placement_plan=prep.placement_plan,
             process_plan=prep.process_plan,
@@ -537,7 +521,6 @@ def test_mp_runner_keeps_cpu_stage_without_gpu_identity(tmp_path) -> None:
             config,
             ctx=FakeMpContext(),
             stages_cfg=prep.stages_cfg,
-            name_map=prep.name_map,
             endpoints=prep.endpoints,
             placement_plan=prep.placement_plan,
             process_plan=prep.process_plan,

@@ -73,7 +73,6 @@ class PipelineRuntimePrep:
     """Prepared stage, endpoint, placement, and topology state."""
 
     stages_cfg: list[StageConfig]
-    name_map: dict[str, str]
     entry_stage: str
     endpoints: dict[str, str]
     placement_plan: StagePlacementPlan
@@ -92,7 +91,7 @@ def create_ipc_runtime_dir(
     base_root = Path(config.endpoints.base_path)
     base_root.mkdir(parents=True, exist_ok=True)
     if stages is None:
-        stages, _, _ = config.apply_fusion()
+        stages, _ = config.apply_fusion()
 
     namespace_prefix = re.sub(r"[^0-9a-z]+", "-", config.name.lower()).strip("-")
     if not namespace_prefix:
@@ -113,7 +112,7 @@ def prepare_pipeline_runtime(
     ipc_runtime_dir: IpcRuntimeDir | None = None,
 ) -> PipelineRuntimePrep:
     """Prepare fused stages, endpoint allocation, and process topology."""
-    stages_cfg, name_map, entry_stage = config.apply_fusion()
+    stages_cfg, entry_stage = config.apply_fusion()
     stages_cfg, replica_topology = expand_replica_stages(stages_cfg)
     validate_device_assignment(stages_cfg, device_count=_visible_device_count())
     runtime_dir = ipc_runtime_dir
@@ -145,7 +144,6 @@ def prepare_pipeline_runtime(
 
     return PipelineRuntimePrep(
         stages_cfg=stages_cfg,
-        name_map=name_map,
         entry_stage=entry_stage,
         endpoints=endpoints,
         placement_plan=placement_plan,
