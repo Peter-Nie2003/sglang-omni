@@ -658,9 +658,8 @@ class PipelineConfig(BaseModel):
                         f"{stage.name!r} must route only to {expected_next!r}"
                     )
 
-    def apply_fusion(self) -> tuple[list[StageConfig], dict[str, str], str]:
-        name_map = {s.name: s.name for s in self.stages}
-        return list(self.stages), name_map, self.resolved_entry_stage
+    def apply_fusion(self) -> tuple[list[StageConfig], str]:
+        return list(self.stages), self.resolved_entry_stage
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> PipelineConfig:
