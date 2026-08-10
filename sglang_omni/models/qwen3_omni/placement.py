@@ -46,7 +46,7 @@ class Qwen3OmniPlacementPolicy:
             return
 
         if type(config).__name__ == _COLOCATED_CONFIG_CLASS:
-            self._validate_colocated_qwen_replicas(stage_map)
+            self._validate_colocated_qwen_replicas(plan)
             self._validate_colocated_qwen_parallelism(stage_map)
             self._validate_colocated_qwen_topology(plan)
             self._validate_colocated_qwen_runtime(stage_map)
@@ -63,14 +63,18 @@ class Qwen3OmniPlacementPolicy:
                     f"share a GPU only with {_COLOCATED_CONFIG_CLASS}"
                 )
 
-    def _validate_colocated_qwen_replicas(self, stage_map) -> None:
+    def _validate_colocated_qwen_replicas(self, plan: StagePlacementPlan) -> None:
+        # Note (kaige): read the expanded plan rather than the pre-expansion
+        # stage config, because replica counts now live on the process.
         replicated = sorted(
-            name for name, stage in stage_map.items() if stage.num_replicas > 1
+            name
+            for name, instances in plan.replica_instances.items()
+            if len(instances) > 1
         )
         if replicated:
             raise ValueError(
-                "Qwen colocated speech does not support stage replicas; "
-                f"got num_replicas > 1 for {replicated}"
+                "Qwen colocated speech does not support process replicas; "
+                f"got replicated stage(s) {replicated}"
             )
 
     def _validate_colocated_qwen_parallelism(self, stage_map) -> None:

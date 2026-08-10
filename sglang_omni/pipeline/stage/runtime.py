@@ -16,6 +16,7 @@ import os
 import queue as _queue_mod
 import threading
 from contextlib import suppress
+from dataclasses import replace
 from typing import Any, Awaitable, Callable, Literal
 
 import torch
@@ -173,7 +174,17 @@ class Stage:
             return
         if request_id in self._aborted or request_id in self._finished_requests:
             return
-        self._replica_bindings.setdefault(request_id, {}).update(bindings)
+        self._replica_bindings.setdefault(request_id, dict(bindings))
+
+    def _logical_source(self, from_stage: str) -> str:
+        """Convert an incoming physical source name to its logical stage name.
+
+        Note (kaige): senders identify themselves by instance name so transport
+        acks and telemetry stay per-replica, but fan-in sources, wait_for_fn,
+        and stream routing are all declared against logical names. Names that
+        are not registered replica instances pass through unchanged.
+        """
+        return self._replica_topology.logical_name(from_stage)
 
     def _resolve_target_instance(self, request_id: str, target: str) -> str:
         if not self._replica_topology.is_replicated(target):
@@ -569,7 +580,9 @@ class Stage:
             event_name="stage_input_received",
             metadata={"from_stage": from_stage, "kind": "payload"},
         )
-        merged = self.input_handler.receive(request_id, from_stage, payload)
+        merged = self.input_handler.receive(
+            request_id, self._logical_source(from_stage), payload
+        )
         if merged is not None:
             _emit_event(
                 request_id=request_id,
@@ -678,6 +691,9 @@ class Stage:
     async def _route_stream_item_or_fail(
         self, request_id: str, item: StreamItem
     ) -> None:
+        logical_source = self._logical_source(item.from_stage)
+        if logical_source != item.from_stage:
+            item = replace(item, from_stage=logical_source)
         if self._open_pre_payload_stream_if_allowed(request_id):
             self._route_stream_item(request_id, item)
             return
@@ -850,7 +866,9 @@ class Stage:
                     ),
                 )
                 return
-            self._stream_queue.put_done(request_id, from_stage=from_stage)
+            self._stream_queue.put_done(
+                request_id, from_stage=self._logical_source(from_stage)
+            )
             self.scheduler.inbox.put(
                 IncomingMessage(
                     request_id=request_id,

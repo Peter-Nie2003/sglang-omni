@@ -4,7 +4,6 @@ from __future__ import annotations
 import pytest
 
 from sglang_omni.config import (
-    build_process_topology_plan,
     build_stage_placement_plan,
     resolve_stage_factory_args,
 )
@@ -14,6 +13,7 @@ from sglang_omni.models.qwen3_omni.config import (
     Variants,
 )
 from sglang_omni.platforms import current_platform
+from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
 def _stage(config, name: str):
@@ -79,8 +79,7 @@ def test_default_speech_topology_stays_disaggregated() -> None:
     }
     assert "code_predictor" not in {stage.name for stage in config.stages}
 
-    plan = build_stage_placement_plan(config)
-    topology = build_process_topology_plan(config, plan)
+    topology = build_compiled_process_topology(config)
 
     assert [group.name for group in topology.groups] == [
         "preprocessing",
@@ -117,7 +116,7 @@ def test_colocated_config_passes_with_explicit_budgets_without_ar_mem_fraction()
     _set_colocated_runtime(config, include_mem_fraction=False)
 
     plan = build_stage_placement_plan(config)
-    topology = build_process_topology_plan(config, plan)
+    topology = build_compiled_process_topology(config)
 
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.94)
     assert [group.name for group in topology.groups] == [

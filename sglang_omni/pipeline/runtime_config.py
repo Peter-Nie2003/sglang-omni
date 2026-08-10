@@ -14,7 +14,12 @@ import zmq
 
 from sglang_omni.config.placement import StagePlacementPlan, build_stage_placement_plan
 from sglang_omni.config.schema import PipelineConfig, StageConfig
-from sglang_omni.config.topology import ProcessTopologyPlan, build_process_topology_plan
+from sglang_omni.config.topology import (
+    LogicalProcessPlan,
+    ProcessTopologyPlan,
+    build_process_topology_plan,
+    compile_logical_processes,
+)
 from sglang_omni.pipeline.replicas import (
     ReplicaTopology,
     expand_replica_stages,
@@ -80,6 +85,7 @@ class PipelineRuntimePrep:
     runtime_dir: IpcRuntimeDir
     runtime_dir_created_here: bool
     replica_topology: ReplicaTopology
+    logical_process_plan: LogicalProcessPlan
 
 
 def create_ipc_runtime_dir(
@@ -91,7 +97,7 @@ def create_ipc_runtime_dir(
     base_root = Path(config.endpoints.base_path)
     base_root.mkdir(parents=True, exist_ok=True)
     if stages is None:
-        stages, _ = config.apply_fusion()
+        stages = list(config.stages)
 
     namespace_prefix = re.sub(r"[^0-9a-z]+", "-", config.name.lower()).strip("-")
     if not namespace_prefix:
@@ -111,9 +117,10 @@ def prepare_pipeline_runtime(
     *,
     ipc_runtime_dir: IpcRuntimeDir | None = None,
 ) -> PipelineRuntimePrep:
-    """Prepare fused stages, endpoint allocation, and process topology."""
-    stages_cfg, entry_stage = config.apply_fusion()
-    stages_cfg, replica_topology = expand_replica_stages(stages_cfg)
+    """Compile the process topology, expand replicas, and allocate endpoints."""
+    logical_plan, stages_cfg = compile_logical_processes(config)
+    entry_stage = config.resolved_entry_stage
+    stages_cfg, replica_topology = expand_replica_stages(stages_cfg, logical_plan)
     validate_device_assignment(stages_cfg, device_count=_visible_device_count())
     runtime_dir = ipc_runtime_dir
     if runtime_dir is None:
@@ -151,6 +158,7 @@ def prepare_pipeline_runtime(
         runtime_dir=runtime_dir,
         runtime_dir_created_here=runtime_dir_created_here,
         replica_topology=replica_topology,
+        logical_process_plan=logical_plan,
     )
 
 
