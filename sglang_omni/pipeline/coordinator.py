@@ -604,8 +604,10 @@ class Coordinator:
         )
 
         if request_id not in self._requests:
-            logger.warning(
-                "Coordinator received completion for unknown req=%s", request_id
+            logger.debug(
+                "Coordinator ignored completion for inactive req=%s from %s",
+                request_id,
+                msg.from_stage,
             )
             return
 
@@ -628,8 +630,9 @@ class Coordinator:
             self._reject_completion_future(
                 request_id, RuntimeError(msg.error or "Unknown error")
             )
-            if request_id in self._stream_queues:
-                await self._stream_queues[request_id].put(msg)
+            stream_queue = self._stream_queues.get(request_id)
+            if stream_queue is not None:
+                await stream_queue.put(msg)
             self._requests.pop(request_id, None)
             return
 
@@ -837,41 +840,3 @@ class Coordinator:
             "pending_completions": len(self._completion_futures),
             "request_states": state_counts,
         }
-
-
-async def run_coordinator(
-    completion_endpoint: str,
-    abort_endpoint: str,
-    entry_stage: str,
-    stages: dict[str, str],  # name -> endpoint
-    terminal_stages: list[str] | None = None,
-    terminal_stages_resolver: Callable[[OmniRequest], list[str] | None] | None = None,
-) -> Coordinator:
-    """Create and start a coordinator.
-
-    Args:
-        completion_endpoint: ZMQ endpoint to receive completions
-        abort_endpoint: ZMQ endpoint for abort broadcasts
-        entry_stage: Name of the entry stage
-        stages: Dict of stage_name -> stage_endpoint
-        terminal_stages: Optional list of terminal stage names for multi-terminal merge
-
-    Returns:
-        Started Coordinator instance
-    """
-    coordinator = Coordinator(
-        completion_endpoint=completion_endpoint,
-        abort_endpoint=abort_endpoint,
-        entry_stage=entry_stage,
-        terminal_stages=terminal_stages,
-        terminal_stages_resolver=terminal_stages_resolver,
-    )
-
-    # Register stages
-    for name, endpoint in stages.items():
-        coordinator.register_stage(name, endpoint)
-
-    # Start
-    await coordinator.start()
-
-    return coordinator
