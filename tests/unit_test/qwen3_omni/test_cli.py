@@ -352,7 +352,7 @@ def test_speech_colocated_rejects_code2wav_gpu_override_to_other_gpu():
 def test_speech_colocated_allows_gpu_override_to_same_gpu():
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
 
-    apply_parallelism_cli_overrides(
+    config = apply_parallelism_cli_overrides(
         config,
         thinker_tp_size=None,
         thinker_gpus=None,
