@@ -42,7 +42,8 @@ def apply_stage_process_overrides(
 
     config = pipeline_config.model_copy(deep=True)
     stages = {stage.name: stage for stage in config.stages}
-    role_map = type(config).isolation_role_to_stage()
+    role_hook = getattr(type(config), "isolation_role_to_stage", None)
+    role_map = role_hook() if role_hook is not None else {}
     resource_contracts = type(config).process_edge_resources()
     baseline_processes = _declared_process_map(config)
 
@@ -85,7 +86,7 @@ def apply_stage_process_overrides(
 
     # Capability first: report an unsupported handoff before a missing fraction,
     # because declaring fractions would not make that split correct.
-    _validate_process_safe_edges(config, new_cross_process_edges)
+    _validate_process_local_edges(config, new_cross_process_edges)
     _apply_process_edge_resources(
         stages,
         new_cross_process_edges,
@@ -205,15 +206,15 @@ def _new_cross_process_edges(
     }
 
 
-def _validate_process_safe_edges(
+def _validate_process_local_edges(
     config: PipelineConfig,
     new_cross_process_edges: set[tuple[str, str]],
 ) -> None:
-    """Reject handoffs the model has not declared safe to split."""
-    safe_edges = type(config).process_safe_edges()
+    """Reject handoffs that require process-local state."""
+    local_edges = type(config).process_local_edges()
 
     for source, destination in sorted(new_cross_process_edges):
-        if (source, destination) not in safe_edges:
+        if (source, destination) in local_edges:
             raise ValueError(
                 f"Process split across {source!r} -> {destination!r} is not "
                 "supported by this model"
