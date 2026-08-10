@@ -338,9 +338,8 @@ that happened to contain an older version of the test.
   - runtime wiring
   - runtime schema/adapter behavior
   - coordinator behavior
-  - stage replicas: instance naming, device splitting, stage expansion,
-    round-robin binding assignment, and placement/override resolution for
-    replica instances
+  - process replicas: whole-process stage expansion, instance naming, device
+    assignment, process-level binding, and logical-to-physical routing
   - stage routing
   - centralized comm router selection, data-reference serialization, ack
     lifecycle, and sender backpressure release
