@@ -32,13 +32,11 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         return {"talker": "tts_engine"}
 
     @classmethod
-    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
-        # Note (Akazaakane): preprocessing -> tts_engine is excluded because
-        # preprocessing stores prepared requests in the module-level
+    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
+        # Note (Akazaakane): preprocessing stores prepared requests in the module-level
         # _PREPROCESSING_CONTEXT/_PREPARED_REQUESTS registries that the AR engine
-        # builder reads in-process. The vocoder loads its own speech tokenizer and
-        # reads audio_codes from the payload.
-        return frozenset({("tts_engine", "vocoder")})
+        # builder reads in-process.
+        return frozenset({("preprocessing", "tts_engine")})
 
     @classmethod
     def process_edge_resources(

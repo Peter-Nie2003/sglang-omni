@@ -24,10 +24,6 @@ class VoxtralTTSPipelineConfig(PipelineConfig):
         return {"generation": "tts_generation"}
 
     @classmethod
-    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
-        return frozenset({(GENERATION_STAGE, VOCODER_STAGE)})
-
-    @classmethod
     def process_edge_resources(
         cls,
     ) -> dict[tuple[str, str], dict[str, float]]:

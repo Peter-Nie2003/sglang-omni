@@ -350,22 +350,17 @@ class PipelineConfig(BaseModel):
         return [s.name for s in self.stages if s.terminal]
 
     @classmethod
-    def isolation_role_to_stage(cls) -> dict[str, str]:
-        """Map public isolation roles to model-specific stage names."""
-        return {}
-
-    @classmethod
-    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
-        """Pipeline edges that stay correct once they become cross-process.
+    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
+        """Pipeline edges whose stages must stay in the same process.
 
         Keyed by edge rather than by stage because correctness depends on which
         handoff crosses a process boundary, not on which stage moved. Grouping
         ``preprocessing`` with ``audio_encoder`` leaves their shared handoff
-        local and only crosses ``audio_encoder -> tts_engine``.
+        local and permits ``audio_encoder -> tts_engine`` to cross processes.
 
-        An edge is safe when the downstream stage rebuilds everything it needs
-        from the payload rather than from a process-local registry. Independent
-        of whether the split also needs GPU memory fractions.
+        Declare an edge only when the downstream stage depends on process-local
+        state that the payload does not carry. GPU memory recommendations are a
+        separate concern handled by ``process_edge_resources``.
         """
         return frozenset()
 
