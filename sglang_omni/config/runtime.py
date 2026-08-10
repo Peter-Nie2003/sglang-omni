@@ -84,6 +84,8 @@ def resolve_stage_factory_arg_defaults(
     defaults: dict[str, Any] = {"model_path": global_cfg.model_path}
     if gpu_id is None:
         gpu_id = _resolve_primary_gpu_id(stage_cfg, global_cfg)
+    # TODO (kaige): Migrate legacy device-only factories before enabling
+    # process replica device remapping for those models.
     defaults["gpu_id"] = gpu_id
     total_gpu_memory_fraction = stage_cfg.runtime.resources.total_gpu_memory_fraction
     if total_gpu_memory_fraction is not None:
