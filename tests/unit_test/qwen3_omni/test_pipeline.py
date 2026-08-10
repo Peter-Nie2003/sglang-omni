@@ -1206,8 +1206,9 @@ def test_qwen_cli_thinker_tp_override_keeps_parallelism_alias_in_sync() -> None:
     assert thinker.gpu == [0, 1]
 
 
-def test_qwen_text_thinker_tp_builds_topology_without_memory_fractions() -> None:
+def test_qwen_text_thinker_tp_builds_topology_when_process_isolated() -> None:
     config = Qwen3OmniPipelineConfig(model_path="dummy")
+    _stage(config, "thinker").process = "thinker"
 
     apply_mem_fraction_cli_overrides(
         config,
@@ -1228,8 +1229,8 @@ def test_qwen_text_thinker_tp_builds_topology_without_memory_fractions() -> None
     thinker = _stage(config, "thinker")
     assert thinker.tp_size == 2
     assert thinker.gpu == [0, 1]
-    assert thinker.process is None
-    assert _stage(config, "thinker").runtime.resources.total_gpu_memory_fraction is None
+    assert thinker.process == "thinker"
+    assert thinker.runtime.resources.total_gpu_memory_fraction is None
 
 
 def test_qwen_thinker_tp_disables_custom_all_reduce_across_configs() -> None:
