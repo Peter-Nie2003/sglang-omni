@@ -117,7 +117,7 @@ Derived from stages:
 | `stages` | `list[StageConfig]` | required | Ordered logical stage definitions. The first stage is the default entry stage. |
 | `name` | `str` or `None` | `model_path` | Pipeline name. Used for reporting and runtime identification. |
 | `entry_stage` | `str` or `None` | first stage | Optional override for the stage that receives new requests. |
-| `fused_stages` | `list[list[str]]` | `[]` | Adjacent linear stage groups to colocate in one runtime process, enabling Stage-level local dispatch while preserving normal Stage ownership. |
+| `processes` | `dict[str, ProcessConfig]` | `{}` | Sparse replica policy keyed by Process Name. Member stages come from `StageConfig.process`, so this never repeats them. Unlisted processes run one replica. |
 | `runtime_overrides` | `dict[str, dict[str, Any]]` | `{}` | Per-stage factory argument overrides applied during runtime prep. |
 | `env_defaults` | `dict[str, str]` | `{}` | Environment defaults applied before stage factory imports. Existing process values take precedence. |
 | `endpoints` | `EndpointsConfig` | IPC defaults | Endpoint allocation settings. `base_path` controls where Unix-domain sockets are created. |
@@ -134,24 +134,67 @@ Derived values are computed from stages, not manually maintained:
 `slot_size_mb`, `credits`, `mooncake_protocol`, `mooncake_hostname`, and
 `mooncake_device_name`. It does not select a transport backend.
 
-### Stage Fusion
+### Logical Processes and Replicas
 
-`fused_stages` is a framework-level colocation hint. It keeps every listed
-logical stage as a normal `Stage`; it does not create a synthetic scheduler or
-move routing, relay, fan-in, streaming, abort, or terminal completion into the
-scheduler layer.
+`StageConfig.process` is the only declaration of process membership. Stages that
+name the same process share one OS process; different names produce different
+processes. A TP stage owns its process outright: it falls back to the stage name
+when `process` is unset, and it cannot be shared with another stage.
 
-At runtime prep, each fused group adds a process-colocation constraint. The
-process topology planner merges the process groups that contain those stages.
-Once colocated, ordinary Stage routing can use process-local object dispatch for
-eligible full-payload hops and process-local stream dispatch for same-process
-stream edges. Cross-process or unsafe fan-out edges still use the relay/control
-plane path.
+The config compiler groups stages by Process Name, attaches the sparse
+`processes` replica policy, and validates the resulting topology once. A
+cross-process edge derived from `next`, `stream_to`, or `wait_for` is rejected
+only when the model lists it in `process_local_edges()`. The matching
+`process_edge_resources()` fractions are then applied to stages that declare
+none of their own. Membership is final after this step.
 
-The first supported fusion form is conservative: a group must be adjacent,
-linear, non-TP, and fit on at most one GPU. Internal stages must route only to
-the next stage in the group. Existing explicit `process` groups are not split;
-if fusion connects two process groups, those groups are merged.
+`ProcessConfig` is the value type of that mapping:
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `num_replicas` | `int >= 1` | `1` | Number of whole-process instances. |
+| `replica_devices` | `int`, `list[int]`, comma-separated `str`, or `None` | `None` | Device ids for every replica, replica 0 included. A non-TP process with GPU stages needs one id per replica; a TP process needs `num_replicas x tp_size` ids. A pure CPU process must leave this unset. |
+
+For example:
+
+```yaml
+stages:
+  - name: decode
+    process: tail
+  - name: postprocess
+    process: tail
+
+processes:
+  tail:
+    num_replicas: 3
+```
+
+A replica copies a whole Process. With `num_replicas: N`, each member stage gets
+N instances, and instances with the same index form one complete Process replica
+named `P@rN` (`decode@r0` and `postprocess@r0` in `tail@r0`). TP rank processes
+are named `P@rN_tpM`. The `@rN` suffix is reserved: user-declared stage and
+process names must not use it.
+
+`replica_devices` covers every replica including index 0, and overrides
+`StageConfig.gpu` for the GPU stages of that process. This holds at
+`num_replicas: 1` as well: the process keeps its unsuffixed names and produces
+no replica bindings, but its GPU stages still move to the declared device. A
+non-TP process with GPU stages needs one device id per replica; a TP process
+with size T needs N x T ids, split into per-replica rank groups. A pure CPU
+process must not declare devices.
+
+Because a replicated process resolves its devices here rather than from
+`StageConfig.gpu`, replica placement is included in GPU colocation validation.
+When `require_memory_fraction_for_colocation` is `true`, every GPU shared by
+multiple process groups requires explicit
+`runtime.resources.total_gpu_memory_fraction` values. Setting it to `false`
+disables that requirement for all colocation, including sharing introduced by
+`replica_devices`. Fractions that are provided still count toward
+`max_total_gpu_memory_fraction_per_gpu`.
+
+At admission the coordinator picks one replica per replicated Process and
+projects that index onto the Process's member stages, so members always agree
+and different processes choose independently.
 
 ## Runtime Prep and Runner
 
@@ -170,8 +213,9 @@ Runtime prep builds the resolved state used by the runner:
 - wire stream targets and same-GPU stream fast paths
 
 Serving uses `MultiProcessPipelineRunner` for both single-process and
-multi-process topologies. Runtime prep first resolves GPU placement, then
-process topology:
+multi-process topologies. Runtime prep compiles the logical process plan first,
+expands process replicas, then resolves GPU placement, and finally builds the
+physical process topology:
 
 - every non-TP stage must declare `process` explicitly — there is no implicit
   default. Configs saved before this refactor are not auto-migrated: set
@@ -180,9 +224,11 @@ process topology:
   opt into the declarative multi-stage-per-process layout;
 - explicit `stage.process` groups non-TP stages declaratively.
 
-A process group may contain CPU stages and stages on at most one GPU. Multiple
-process groups may share the same GPU only when GPU-stage memory budgets are
-explicit and fit the configured placement limit.
+A process group may contain CPU stages and stages on at most one GPU. When
+`require_memory_fraction_for_colocation` is enabled, multiple process groups may
+share the same GPU only when GPU-stage memory budgets are explicit. Disabling
+that requirement permits missing budgets; any budgets that are provided must
+still fit the configured placement limit.
 
 ```text
 pipeline/
