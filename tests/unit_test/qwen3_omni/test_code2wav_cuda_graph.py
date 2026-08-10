@@ -742,30 +742,26 @@ def test_tier1_publishes_full_matrix_within_budget() -> None:
     backend = _SequencedBackend(
         snapshots=[
             (100, 120),  # before
-            (160, 200),  # after tier 0
-            (160, 200),  # tier-1 attempt baseline
-            (260, 300),
-            (300, 340),
-            (320, 360),
-            (330, 370),
+            (100, 120),  # attempt baseline
+            (300, 340),  # after b4t20
+            (360, 400),  # after b4t10
+            (390, 430),  # after b2t20
+            (400, 440),  # after b2t10
+            (420, 460),  # final combined footprint
         ],
     )
     runner = _build_tiered_runner(backend)
 
     assert [tuple(graph.static_input.shape) for graph in backend.graphs] == [
-        (1, 16, 20),
-        (1, 16, 10),
         (4, 16, 20),
         (4, 16, 10),
         (2, 16, 20),
         (2, 16, 10),
+        (1, 16, 20),
+        (1, 16, 10),
     ]
-    assert backend.pool_calls == 2
-    tier0_pools = set(map(id, backend.capture_pools[:2]))
-    tier1_pools = set(map(id, backend.capture_pools[2:]))
-    assert len(tier0_pools) == 1
-    assert len(tier1_pools) == 1
-    assert tier0_pools != tier1_pools
+    assert backend.pool_calls == 1
+    assert len({id(pool) for pool in backend.capture_pools}) == 1
 
     stats = runner.stats()
     assert stats["enabled"] is True
@@ -788,14 +784,14 @@ def test_tier1_budget_violation_republishes_greedy_prefix() -> None:
     backend = _SequencedBackend(
         snapshots=[
             (100, 120),  # before
-            (160, 200),  # after tier 0
-            (160, 200),  # attempt 1 baseline
-            (300, 340),
-            (400, 440),
+            (100, 120),  # attempt 1 baseline
+            (300, 340),  # after b4t20
+            (400, 440),  # after b4t10
             (560, 600),  # b2t20 pushes footprint past the 400 budget
-            (160, 200),  # attempt 2 baseline
-            (300, 340),
-            (400, 440),
+            (100, 120),  # attempt 2 baseline
+            (300, 340),  # after b4t20
+            (400, 440),  # after b4t10
+            (420, 460),  # final combined footprint
         ],
     )
     runner = _build_tiered_runner(backend)
@@ -808,7 +804,7 @@ def test_tier1_budget_violation_republishes_greedy_prefix() -> None:
         {"batch_size": 2, "frames": 10},
         {"batch_size": 2, "frames": 20},
     ]
-    assert backend.pool_calls == 3
+    assert backend.pool_calls == 2
     assert runner.available_batch_sizes(20) == (4, 1)
     assert runner.available_batch_sizes(10) == (4, 1)
     assert stats["build"]["published_graph_count"] == 4
@@ -824,12 +820,12 @@ def test_tier1_oversized_first_key_drops_its_batch_class() -> None:
     backend = _SequencedBackend(
         snapshots=[
             (100, 120),  # before
-            (160, 200),  # after tier 0
-            (160, 200),  # attempt 1 baseline
+            (100, 120),  # attempt 1 baseline
             (700, 740),  # b4t20 alone exceeds the budget
-            (160, 200),  # attempt 2 baseline
-            (260, 300),
-            (300, 340),
+            (100, 120),  # attempt 2 baseline
+            (260, 300),  # after b2t20
+            (300, 340),  # after b2t10
+            (320, 360),  # final combined footprint
         ],
     )
     runner = _build_tiered_runner(backend)
@@ -844,17 +840,50 @@ def test_tier1_oversized_first_key_drops_its_batch_class() -> None:
     assert runner.available_batch_sizes(20) == (2, 1)
 
 
+def test_combined_footprint_violation_drops_largest_batch_class() -> None:
+    backend = _SequencedBackend(
+        snapshots=[
+            (100, 120),  # before
+            (100, 120),  # attempt 1 baseline
+            (300, 340),  # after b4t20
+            (360, 400),  # after b4t10
+            (390, 430),  # after b2t20
+            (400, 440),  # after b2t10
+            (520, 560),  # tier 0 pushes the combined footprint past 400
+            (100, 120),  # attempt 2 baseline
+            (260, 300),  # after b2t20
+            (300, 340),  # after b2t10
+            (320, 360),  # final combined footprint
+        ],
+    )
+    runner = _build_tiered_runner(backend)
+
+    stats = runner.stats()
+    assert stats["enabled"] is True
+    assert stats["build"]["published_graph_count"] == 4
+    assert stats["memory"]["graph_footprint_bytes"] == 240
+    tier1 = stats["memory"]["tier1"]
+    assert tier1["attempts"] == 2
+    assert tier1["published_key_count"] == 2
+    assert tier1["skipped_keys"] == [
+        {"batch_size": 4, "frames": 10},
+        {"batch_size": 4, "frames": 20},
+    ]
+    assert backend.pool_calls == 2
+    assert runner.available_batch_sizes(20) == (2, 1)
+
+
 def test_tier1_capture_oom_drops_the_batch_class_and_retries() -> None:
     backend = _SequencedBackend(
         snapshots=[
             (100, 120),  # before
-            (160, 200),  # after tier 0
-            (160, 200),  # attempt 1 baseline
-            (160, 200),  # attempt 2 baseline
-            (260, 300),
-            (300, 340),
+            (100, 120),  # attempt 1 baseline
+            (100, 120),  # attempt 2 baseline
+            (260, 300),  # after b2t20
+            (300, 340),  # after b2t10
+            (320, 360),  # final combined footprint
         ],
-        errors_at={2: torch.OutOfMemoryError("fake tier1 capture OOM")},
+        errors_at={0: torch.OutOfMemoryError("fake tier1 capture OOM")},
     )
     runner = _build_tiered_runner(backend)
 
@@ -869,11 +898,11 @@ def test_tier1_capture_oom_drops_the_batch_class_and_retries() -> None:
 def test_tier1_capture_error_abandons_tier_but_keeps_tier0() -> None:
     backend = _SequencedBackend(
         snapshots=[
-            (100, 120),
-            (160, 200),
-            (160, 200),
+            (100, 120),  # before
+            (100, 120),  # attempt 1 baseline
+            (160, 200),  # tier0-only final combined footprint
         ],
-        errors_at={2: RuntimeError("fake capture explosion")},
+        errors_at={0: RuntimeError("fake capture explosion")},
     )
     runner = _build_tiered_runner(backend)
 
@@ -897,12 +926,12 @@ def test_tier1_capture_error_abandons_tier_but_keeps_tier0() -> None:
 def test_tier1_equivalence_failure_abandons_tier_with_original_reason() -> None:
     backend = _SequencedBackend(
         snapshots=[
-            (100, 120),
-            (160, 200),
-            (160, 200),
+            (100, 120),  # before
+            (100, 120),  # attempt 1 baseline
+            (160, 200),  # tier0-only final combined footprint
         ],
     )
-    backend.corrupt_at = 2
+    backend.corrupt_at = 0
     runner = _build_tiered_runner(backend)
 
     stats = runner.stats()
@@ -914,13 +943,13 @@ def test_tier1_equivalence_failure_abandons_tier_with_original_reason() -> None:
 def test_runtime_disable_clears_tier1_availability() -> None:
     backend = _SequencedBackend(
         snapshots=[
-            (100, 120),
-            (160, 200),
-            (160, 200),
-            (260, 300),
-            (300, 340),
-            (320, 360),
-            (330, 370),
+            (100, 120),  # before
+            (100, 120),  # attempt baseline
+            (300, 340),  # after b4t20
+            (360, 400),  # after b4t10
+            (390, 430),  # after b2t20
+            (400, 440),  # after b2t10
+            (420, 460),  # final combined footprint
         ],
     )
     runner = _build_tiered_runner(backend)
