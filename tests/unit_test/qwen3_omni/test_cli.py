@@ -293,6 +293,54 @@ def test_qwen_text_encoder_mem_reserve_still_targets_thinker():
     assert _stage(config, "thinker").factory_args["encoder_mem_reserve"] == 0.05
 
 
+def test_qwen_text_tp_override_rejects_shared_process():
+    original = Qwen3OmniPipelineConfig(model_path="dummy")
+
+    with pytest.raises(typer.BadParameter, match="cannot be shared"):
+        apply_parallelism_cli_overrides(
+            original,
+            thinker_tp_size=2,
+            thinker_gpus="0,1",
+            talker_gpu=None,
+            code2wav_gpu=None,
+        )
+
+    assert _stage(original, "thinker").tp_size == 1
+
+
+@pytest.mark.parametrize("stage_name", ["thinker", "image_encoder"])
+def test_tp_override_to_one_materializes_implicit_process(stage_name):
+    original = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            StageConfig(
+                name=stage_name,
+                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
+                gpu=[0, 1],
+                tp_size=2,
+                terminal=True,
+            )
+        ],
+    )
+    overrides = {
+        "thinker_tp_size": None,
+        "thinker_gpus": None,
+        "image_encoder_tp_size": None,
+        "image_encoder_gpus": None,
+        "talker_gpu": None,
+        "code2wav_gpu": None,
+    }
+    overrides[f"{stage_name}_tp_size"] = 1
+    overrides[f"{stage_name}_gpus"] = "0"
+
+    config = apply_parallelism_cli_overrides(original, **overrides)
+
+    stage = _stage(config, stage_name)
+    assert stage.tp_size == 1
+    assert stage.gpu == 0
+    assert stage.process == stage_name
+
+
 def test_qwen_speech_encoder_mem_reserve_still_targets_thinker():
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
 

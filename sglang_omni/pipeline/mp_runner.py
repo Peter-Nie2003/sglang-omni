@@ -483,6 +483,7 @@ class MultiProcessPipelineRunner:
                 terminal_stages=self._config.terminal_stages or None,
                 terminal_stages_resolver=terminal_stages_resolver,
                 replica_topology=prep.replica_topology,
+                logical_process_plan=prep.logical_process_plan,
                 max_in_flight=max_in_flight,
             )
             if max_in_flight is not None:
