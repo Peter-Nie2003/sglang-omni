@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Stage-replica smoke test for the Qwen3-Omni speech pipeline.
+"""Process-replica smoke test for the Qwen3-Omni speech pipeline.
 
 Launches the 2-replica speech deployment (thinker on GPU 0, one
 talker_ar + code2wav pair each on GPU 1 and GPU 2) and drives audio
 requests through it. Asserts every request returns audio, that all four
 replica instances were spawned and registered, and that admission
-round-robined across both replicas of each replicated stage.
+round-robined across both replicas of each replicated process.
 
 Requires 3 GPUs.
 
 Usage:
-    pytest tests/test_model/test_qwen3_omni_stage_replicas.py -s -x
+    pytest tests/test_model/test_qwen3_omni_process_replicas.py -s -x
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ STARTUP_TIMEOUT = 900
 REQUEST_TIMEOUT = 300
 
 NUM_REQUESTS = 4
-REPLICATED_STAGES = ("talker_ar", "code2wav")
+REPLICATED_PROCESSES = ("talker_ar", "code2wav")
 REPLICA_INSTANCES = (
     "talker_ar@r0",
     "talker_ar@r1",
@@ -142,8 +142,11 @@ def test_every_replica_serves_audio(replica_server):
     for raw in admitted:
         for stage, replica_id in ast.literal_eval(raw).items():
             bound.setdefault(stage, set()).add(replica_id)
-    for stage in REPLICATED_STAGES:
-        assert bound.get(stage) == {
+    for process_name in REPLICATED_PROCESSES:
+        assert bound.get(process_name) == {
             0,
             1,
-        }, f"{stage} did not round-robin across both replicas: {bound.get(stage)}"
+        }, (
+            f"{process_name} did not round-robin across both replicas: "
+            f"{bound.get(process_name)}"
+        )
