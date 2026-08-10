@@ -352,6 +352,10 @@ class Code2WavCudaGraphRunner:
                         stream=capture_stream,
                     )
                     self._cuda.synchronize(self._device)
+                    # Warmup's eager activations linger in the allocator cache
+                    # and would count as reserved footprint, dwarfing the pool
+                    # itself; release them so the check measures what is kept.
+                    self._cuda.empty_cache()
                     footprint = self._footprint_since(before)
                     tier1_info["per_key_footprint_bytes"][self._key_name(key)] = (
                         footprint - previous_footprint
