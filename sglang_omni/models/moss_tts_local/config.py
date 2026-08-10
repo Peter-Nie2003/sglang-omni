@@ -144,12 +144,10 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
         return {"generation": "tts_engine"}
 
     @classmethod
-    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
-        # Note (Akazaakane): preprocessing -> tts_engine is excluded because
-        # preprocessing publishes prepared requests into a module-level
-        # PreparedRequestQueue that the AR stage pops in-process; the vocoder only
-        # reads codes carried in the payload.
-        return frozenset({("tts_engine", "vocoder")})
+    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
+        # Note (Akazaakane): preprocessing publishes prepared requests into a
+        # module-level PreparedRequestQueue that the AR stage pops in-process.
+        return frozenset({("preprocessing", "tts_engine")})
 
     @classmethod
     def process_edge_resources(
@@ -264,11 +262,11 @@ class MossTTSLocalSplitPipelineConfig(MossTTSLocalPipelineConfig):
     """Two-GPU variant that places codec work on the second visible GPU."""
 
     @classmethod
-    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
+    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
         # Note (Akazaakane): split mode declares gpu=0 for placement while running the
         # codec on cuda:1, so the colocated fractions do not describe this topology.
         # Splitting stays unsupported here until the split variant declares its own.
-        return frozenset()
+        return frozenset({("preprocessing", "tts_engine"), ("tts_engine", "vocoder")})
 
     @classmethod
     def process_edge_resources(
