@@ -73,7 +73,6 @@ def _build_stage_groups(
     ctx: multiprocessing.context.BaseContext | None = None,
     *,
     stages_cfg: list[StageConfig],
-    name_map: dict[str, str],
     endpoints: dict[str, str],
     placement_plan: StagePlacementPlan,
     process_plan: ProcessTopologyPlan,
@@ -100,27 +99,17 @@ def _build_stage_groups(
     stream_receivers: set[str] = set()
     for scfg in stages_cfg:
         for target in scfg.stream_to:
-            canonical = name_map.get(target, target)
-            stream_receivers.update(replica_topology.instances(canonical))
+            stream_receivers.update(replica_topology.instances(target))
     stage_cfg_by_name = {stage.name: stage for stage in stages_cfg}
 
     nccl_port_counter = _NcclPortAllocator()
 
     # GPU-resident stages, shared by every stage so the transport router can
-    # decide GPU vs host transport per edge from static placement alone. Include the
-    # pre-fusion aliases so lookups work whether an edge names a stage by its
-    # raw or canonical (fused) name.
-    gpu_canonical = resolve_gpu_stage_names(placement_plan)
-    gpu_stage_names = set(gpu_canonical)
-    for raw_name, canonical_name in name_map.items():
-        if canonical_name in gpu_canonical:
-            gpu_stage_names.add(raw_name)
+    # decide GPU vs host transport per edge from static placement alone.
+    gpu_stage_names = resolve_gpu_stage_names(placement_plan)
     stage_gpu_ids = {
         name: placement.gpu_ids for name, placement in placement_plan.stages.items()
     }
-    for raw_name, canonical_name in name_map.items():
-        if canonical_name in stage_gpu_ids:
-            stage_gpu_ids[raw_name] = stage_gpu_ids[canonical_name]
 
     single_stage_specs: dict[str, StageLaunchConfig] = {}
     tp_groups: list[StageGroup] = []
@@ -132,7 +121,6 @@ def _build_stage_groups(
         same_process_targets = _resolve_same_process_targets(
             stage_cfg,
             stage_cfg_by_name,
-            name_map,
             process_plan,
             replica_topology,
         )
@@ -155,7 +143,7 @@ def _build_stage_groups(
             project_payload={
                 instance: dotted_path
                 for target, dotted_path in stage_cfg.project_payload.items()
-                for instance in replica_topology.instances(name_map.get(target, target))
+                for instance in replica_topology.instances(target)
             },
             coordinator_endpoint=endpoints["completion"],
             abort_endpoint=endpoints["abort"],
@@ -169,7 +157,6 @@ def _build_stage_groups(
             is_stream_receiver=stage_cfg.name in stream_receivers,
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             disable_direct_cuda_ipc_payload=stage_cfg.disable_direct_cuda_ipc_payload,
-            name_map=name_map,
             replica_topology=replica_topology.to_dict(),
         )
         if tp_size == 1:
@@ -259,7 +246,6 @@ def _attach_process_memory_fraction_defaults(groups: list[StageGroup]) -> None:
 def _resolve_same_process_targets(
     stage_cfg: StageConfig,
     stage_cfg_by_name: dict[str, StageConfig],
-    name_map: dict[str, str],
     process_plan: ProcessTopologyPlan,
     replica_topology: ReplicaTopology | None = None,
 ) -> set[str]:
@@ -280,8 +266,7 @@ def _resolve_same_process_targets(
 
     same_process_targets: set[str] = set()
     for raw_target in raw_targets:
-        logical = name_map.get(raw_target, raw_target)
-        for target in replica_topology.instances(logical):
+        for target in replica_topology.instances(raw_target):
             target_cfg = stage_cfg_by_name.get(target)
             if target_cfg is None or target_cfg.tp_size > 1:
                 continue
@@ -479,7 +464,6 @@ class MultiProcessPipelineRunner:
                 self._config,
                 ctx,
                 stages_cfg=prep.stages_cfg,
-                name_map=prep.name_map,
                 endpoints=prep.endpoints,
                 placement_plan=prep.placement_plan,
                 process_plan=prep.process_plan,
