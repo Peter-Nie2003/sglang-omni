@@ -366,22 +366,9 @@ class PipelineConfig(BaseModel):
         local and permits ``audio_encoder -> tts_engine`` to cross processes.
 
         Declare an edge only when the downstream stage depends on process-local
-        state that the payload does not carry. GPU memory recommendations are a
-        separate concern handled by ``process_edge_resources``.
+        state that the payload does not carry.
         """
         return frozenset()
-
-    @classmethod
-    def process_edge_resources(
-        cls,
-    ) -> dict[tuple[str, str], dict[str, float]]:
-        """Map cross-process pipeline edges to GPU memory fractions.
-
-        Only a placement recommendation applied to edges that the compiled
-        topology actually crosses, and only for stages that declare no explicit
-        fraction of their own.
-        """
-        return {}
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:

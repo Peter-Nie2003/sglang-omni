@@ -149,18 +149,6 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
         # module-level PreparedRequestQueue that the AR stage pops in-process.
         return frozenset({("preprocessing", "tts_engine")})
 
-    @classmethod
-    def process_edge_resources(
-        cls,
-    ) -> dict[tuple[str, str], dict[str, float]]:
-        return {
-            ("tts_engine", "vocoder"): {
-                "preprocessing": _COLOCATED_PREPROCESSING_GPU_MEMORY_FRACTION,
-                "tts_engine": _COLOCATED_AR_GPU_MEMORY_FRACTION,
-                "vocoder": _COLOCATED_VOCODER_GPU_MEMORY_FRACTION,
-            }
-        }
-
     model_path: str
     stages: list[StageConfig] = Field(
         default_factory=lambda: _stages(codec_device="cuda:0", colocated=True)
@@ -267,12 +255,6 @@ class MossTTSLocalSplitPipelineConfig(MossTTSLocalPipelineConfig):
         # codec on cuda:1, so the colocated fractions do not describe this topology.
         # Splitting stays unsupported here until the split variant declares its own.
         return frozenset({("preprocessing", "tts_engine"), ("tts_engine", "vocoder")})
-
-    @classmethod
-    def process_edge_resources(
-        cls,
-    ) -> dict[tuple[str, str], dict[str, float]]:
-        return {}
 
     stages: list[StageConfig] = Field(
         default_factory=lambda: _stages(codec_device="cuda:1", colocated=False)

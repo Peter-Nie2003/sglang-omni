@@ -21,7 +21,6 @@ from sglang_omni.config.schema import (
     PipelineConfig,
     ProcessConfig,
     StageConfig,
-    StageResourceConfig,
     stage_process_name,
 )
 
@@ -107,9 +106,8 @@ def compile_logical_processes(
     This is the final configuration-validation layer before worker startup;
     downstream runtime code consumes the resulting plan without revalidating it.
 
-    Returns the plan plus stage-config copies carrying the GPU memory fractions
-    implied by the cross-process edges the topology declares. The input config
-    is left untouched.
+    Returns the plan plus stage-config copies. The input config is left
+    untouched.
     """
     stages = [stage.model_copy(deep=True) for stage in config.stages]
     members = _group_stages_by_process(stages)
@@ -128,7 +126,6 @@ def compile_logical_processes(
 
     cross_process_edges = _cross_process_edges(stages, plan)
     _validate_process_local_edges(config, cross_process_edges)
-    _apply_process_edge_resources(config, stages, cross_process_edges)
     return plan, stages
 
 
@@ -252,53 +249,6 @@ def _validate_process_local_edges(
         raise ValueError(
             f"Cross-process edge(s) require source and destination to share a "
             f"process: {rendered}. Give the stages the same StageConfig.process"
-        )
-
-
-def _apply_process_edge_resources(
-    config: PipelineConfig,
-    stages: list[StageConfig],
-    cross_process_edges: set[tuple[str, str]],
-) -> None:
-    """Fill in the GPU memory fractions implied by crossed edges."""
-    resource_contracts = type(config).process_edge_resources()
-    if not resource_contracts:
-        return
-
-    stage_by_name = {stage.name: stage for stage in stages}
-    recommendations: dict[str, tuple[float, tuple[str, str]]] = {}
-    for edge in sorted(cross_process_edges):
-        for stage_name, memory_fraction in resource_contracts.get(edge, {}).items():
-            if stage_name not in stage_by_name:
-                raise ValueError(
-                    f"Process-edge resources for {edge!r} reference unknown "
-                    f"stage {stage_name!r}"
-                )
-            validated = StageResourceConfig.model_validate(
-                {"total_gpu_memory_fraction": memory_fraction}
-            ).total_gpu_memory_fraction
-            assert validated is not None
-            previous = recommendations.get(stage_name)
-            if previous is not None and previous[0] != validated:
-                raise ValueError(
-                    f"Conflicting process-edge resources for stage "
-                    f"{stage_name!r}: edge {previous[1]!r} recommends "
-                    f"{previous[0]} but edge {edge!r} recommends {validated}"
-                )
-            recommendations[stage_name] = (validated, edge)
-
-    for stage_name, (memory_fraction, _edge) in sorted(recommendations.items()):
-        stage = stage_by_name[stage_name]
-        resources = stage.runtime.resources
-        if resources.total_gpu_memory_fraction is not None:
-            continue
-        # Note (Akazaakane): plain attribute assignment skips the field
-        # validator, so re-validate the whole resource block.
-        stage.runtime.resources = StageResourceConfig.model_validate(
-            {
-                **resources.model_dump(),
-                "total_gpu_memory_fraction": memory_fraction,
-            }
         )
 
 

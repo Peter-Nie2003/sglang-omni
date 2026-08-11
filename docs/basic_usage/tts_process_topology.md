@@ -45,49 +45,40 @@ Running a stage alone means giving it a process name nothing else uses.
 ## How a Topology Is Validated
 
 The compiler enumerates every cross-process edge of the final topology from
-`next`, `stream_to`, and `wait_for`, and applies two independent model contracts:
+`next`, `stream_to`, and `wait_for`, and applies the model's correctness
+contract:
 
 - `process_local_edges()` — which handoffs must stay inside one process because
   the payload does not carry required process-local state. Edges are splittable
   by default. The exception is declared per **edge**, not per stage, because
   grouping `preprocessing` with `audio_encoder` leaves their shared handoff local
   while still permitting `audio_encoder -> tts_engine` to cross processes.
-- `process_edge_resources()` — which GPU memory fractions to apply when that
-  edge crosses processes. A recommendation, not a capability, applied only to
-  stages that declare no fraction of their own. An edge with no recommendation is
-  still splittable when the config already declares fractions or nothing else
-  shares its GPU; otherwise placement validation names the stages whose fractions
-  are missing.
 
-The constraint is checked once while compiling the config, including for edges
-that tensor parallelism creates by putting a TP stage in its own process. A
-process-local handoff is reported before a missing fraction, because declaring
-fractions would not make that split correct.
+The contract is checked once while compiling the config, including for edges
+that tensor parallelism creates by putting a TP stage in its own process.
 
 ## Applicability by Model
 
-| Model | Process-local edges | Recommended fractions |
-| --- | --- | --- |
-| Higgs-TTS | — | none needed; the config already declares 0.03 / 0.85 / 0.10 |
-| FishAudio S2-Pro | — | `tts_engine -> vocoder` |
-| Voxtral TTS | — | `tts_generation -> vocoder` |
-| Ming-Omni-TTS | — | `tts_engine -> audio_decode` |
-| MOSS-TTS Local (single-GPU) | `preprocessing -> tts_engine` — preprocessing publishes into a process-local `PreparedRequestQueue` the AR stage pops | `tts_engine -> vocoder` |
-| MOSS-TTS Local (split) | all pipeline edges; placement declares GPU 0 while the codec runs on `cuda:1` | — |
-| Qwen3-TTS | `preprocessing -> tts_engine` — prepared requests live in `_PREPROCESSING_CONTEXT` / `_PREPARED_REQUESTS`, read in-process by the AR engine builder | `tts_engine -> vocoder` |
-| MOSS-TTS Delay | `preprocessing -> tts_engine` — same process-local `PreparedRequestQueue` handoff | `tts_engine -> vocoder` |
-| Audar-TTS | — | none yet — declare fractions before splitting |
-| Zonos2 | — | none yet — declare fractions before splitting |
+| Model | Process-local edges |
+| --- | --- |
+| Higgs-TTS | — |
+| FishAudio S2-Pro | — |
+| Voxtral TTS | — |
+| Ming-Omni-TTS | — |
+| MOSS-TTS Local (single-GPU) | `preprocessing -> tts_engine` — preprocessing publishes into a process-local `PreparedRequestQueue` the AR stage pops |
+| MOSS-TTS Local (split) | all pipeline edges; placement declares GPU 0 while the codec runs on `cuda:1` |
+| Qwen3-TTS | `preprocessing -> tts_engine` — prepared requests live in `_PREPROCESSING_CONTEXT` / `_PREPARED_REQUESTS`, read in-process by the AR engine builder |
+| MOSS-TTS Delay | `preprocessing -> tts_engine` — same process-local `PreparedRequestQueue` handoff |
+| Audar-TTS | — |
+| Zonos2 | — |
 
 Higgs-TTS already groups `preprocessing` and `audio_encoder` in a
 `tts_frontend` process and places `vocoder` in its own process by default.
 Redeclaring either placement is a no-op; the stages can still be fully separated
 or regrouped under another process name.
 
-Audar-TTS and Zonos2 carry stage state in `StagePayload.data`, but neither ships
-recommended fractions, so a split on a shared GPU fails with the missing-fraction
-error until the operator declares
-`runtime.resources.total_gpu_memory_fraction` for every stage on that GPU.
+Audar-TTS and Zonos2 carry stage state in `StagePayload.data`, so neither
+declares a process-local edge.
 
 ## Process Replicas
 
@@ -120,9 +111,8 @@ compatible `runtime.resources.total_gpu_memory_fraction` values, and their total
 must fit the placement limit. A model may opt out of that requirement with
 `require_memory_fraction_for_colocation: false`, including for sharing introduced
 by `replica_devices`. Explicitly configured fractions still count toward the
-placement limit. Recommended fractions fill in only where the config declares
-none, so explicitly configured values are preserved, and conflicting
-recommendations for one stage are rejected.
+placement limit. Fractions must be declared directly on the stages; compiling a
+process topology does not infer or rewrite them.
 
 These fractions are placement-accounting declarations, not proof of an
 allocator-enforced runtime limit. A factory receives
