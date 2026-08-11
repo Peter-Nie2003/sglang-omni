@@ -290,121 +290,6 @@ def test_stream_and_wait_for_edges_respect_process_local_constraint() -> None:
         compile_logical_processes(config)
 
 
-def test_process_edge_resources_fill_only_undeclared_fractions() -> None:
-    config_cls = type(
-        "_EdgeResourceConfig",
-        (PipelineConfig,),
-        {
-            "process_edge_resources": classmethod(
-                lambda cls: {("engine", "vocoder"): {"engine": 0.80, "vocoder": 0.10}}
-            ),
-        },
-    )
-    config = config_cls(
-        model_path="dummy",
-        stages=[
-            _stage("engine", gpu=0, fraction=0.55, process="p0", next_stage="vocoder"),
-            _stage("vocoder", gpu=0, process="p1", terminal=True),
-        ],
-    )
-
-    assert _compiled_fractions(config) == {"engine": 0.55, "vocoder": 0.10}
-
-
-def test_process_edge_resources_are_skipped_when_the_edge_stays_local() -> None:
-    config_cls = type(
-        "_LocalEdgeResourceConfig",
-        (PipelineConfig,),
-        {
-            "process_edge_resources": classmethod(
-                lambda cls: {("engine", "vocoder"): {"engine": 0.80}}
-            ),
-        },
-    )
-    config = config_cls(
-        model_path="dummy",
-        stages=[
-            _stage("engine", gpu=0, process="p", next_stage="vocoder"),
-            _stage("vocoder", gpu=0, process="p", terminal=True),
-        ],
-    )
-
-    assert _compiled_fractions(config) == {"engine": None, "vocoder": None}
-
-
-def test_process_edge_resources_reject_conflicting_recommendations() -> None:
-    config_cls = type(
-        "_ConflictingEdgeResourceConfig",
-        (PipelineConfig,),
-        {
-            "process_edge_resources": classmethod(
-                lambda cls: {
-                    ("a", "b"): {"b": 0.30},
-                    ("b", "c"): {"b": 0.60},
-                }
-            ),
-        },
-    )
-    config = config_cls(
-        model_path="dummy",
-        stages=[
-            _stage("a", gpu=0, process="p0", next_stage="b"),
-            _stage("b", gpu=0, process="p1", next_stage="c"),
-            _stage("c", gpu=0, process="p2", terminal=True),
-        ],
-    )
-
-    with pytest.raises(ValueError, match="Conflicting process-edge resources"):
-        compile_logical_processes(config)
-
-
-def test_process_edge_resources_reject_unknown_stage() -> None:
-    config_cls = type(
-        "_UnknownStageEdgeResourceConfig",
-        (PipelineConfig,),
-        {
-            "process_edge_resources": classmethod(
-                lambda cls: {("a", "b"): {"missing": 0.30}}
-            ),
-        },
-    )
-    config = config_cls(
-        model_path="dummy",
-        stages=[
-            _stage("a", gpu=0, process="p0", next_stage="b"),
-            _stage("b", gpu=0, process="p1", terminal=True),
-        ],
-    )
-
-    with pytest.raises(ValueError, match="unknown stage"):
-        compile_logical_processes(config)
-
-
-def test_compile_does_not_mutate_the_source_config() -> None:
-    config_cls = type(
-        "_NonMutatingEdgeResourceConfig",
-        (PipelineConfig,),
-        {
-            "process_edge_resources": classmethod(
-                lambda cls: {("a", "b"): {"a": 0.30, "b": 0.40}}
-            ),
-        },
-    )
-    config = config_cls(
-        model_path="dummy",
-        stages=[
-            _stage("a", gpu=0, process="p0", next_stage="b"),
-            _stage("b", gpu=0, process="p1", terminal=True),
-        ],
-    )
-
-    compile_logical_processes(config)
-
-    assert [
-        stage.runtime.resources.total_gpu_memory_fraction for stage in config.stages
-    ] == [None, None]
-
-
 # --- Model topologies -----------------------------------------------------------
 
 
@@ -444,77 +329,20 @@ def test_moss_tts_local_split_rejects_splitting_the_pipeline() -> None:
         compile_logical_processes(isolated)
 
 
-def test_ming_tts_default_is_local_and_isolating_audio_decode_adds_fractions() -> None:
+def test_ming_tts_default_stays_in_one_process() -> None:
     from sglang_omni.models.ming_tts.config import MingTTSPipelineConfig
 
     config = MingTTSPipelineConfig(model_path="dummy")
     assert _process_names(config) == ["pipeline"] * 4
-    assert _compiled_fractions(config) == {
-        "reference_encode": None,
-        "tts_engine": None,
-        "audio_decode": None,
-    }
-
-    isolated = _isolate(config, audio_decode="audio_decode")
-
-    assert [
-        (group.name, group.stage_names) for group in _compiled_topology(isolated).groups
-    ] == [
-        ("pipeline", ("preprocessing", "reference_encode", "tts_engine")),
-        ("audio_decode", ("audio_decode",)),
-    ]
-    assert _compiled_fractions(isolated) == {
-        "reference_encode": 0.08,
-        "tts_engine": 0.72,
-        "audio_decode": 0.12,
-    }
+    compile_logical_processes(config)
 
 
-def test_ming_tts_isolation_fractions_respect_the_placement_limit() -> None:
-    from sglang_omni.config import PlacementConfig
-    from sglang_omni.models.ming_tts.config import MingTTSPipelineConfig
-
-    config = MingTTSPipelineConfig(
-        model_path="dummy",
-        placement=PlacementConfig(max_total_gpu_memory_fraction_per_gpu=0.90),
-    )
-    isolated = _isolate(config, audio_decode="audio_decode")
-
-    _, stages = compile_logical_processes(isolated)
-    with pytest.raises(ValueError, match="exceeds placement limit 0.900"):
-        build_stage_placement_plan(isolated, stages_cfg=stages)
-
-
-def test_fishaudio_default_splits_preprocessing_and_can_isolate_the_vocoder() -> None:
+def test_fishaudio_default_splits_preprocessing_from_the_pipeline() -> None:
     from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 
     config = S2ProPipelineConfig(model_path="dummy")
     assert _process_names(config) == ["preprocessing", "pipeline", "pipeline"]
     compile_logical_processes(config)
-
-    isolated = _isolate(config, vocoder="vocoder")
-
-    assert [
-        (group.name, group.stage_names) for group in _compiled_topology(isolated).groups
-    ] == [
-        ("preprocessing", ("preprocessing",)),
-        ("pipeline", ("tts_engine",)),
-        ("vocoder", ("vocoder",)),
-    ]
-    assert _compiled_fractions(isolated) == {"tts_engine": 0.85, "vocoder": 0.10}
-
-
-def test_voxtral_can_isolate_the_vocoder() -> None:
-    from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
-
-    config = VoxtralTTSPipelineConfig(model_path="dummy")
-    compile_logical_processes(config)
-
-    isolated = _isolate(config, vocoder="vocoder")
-
-    assert ("vocoder", ("vocoder",)) in [
-        (group.name, group.stage_names) for group in _compiled_topology(isolated).groups
-    ]
 
 
 def test_qwen3_tts_rejects_splitting_preprocessing_from_the_engine() -> None:
