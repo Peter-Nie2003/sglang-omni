@@ -37,6 +37,10 @@ class HiggsTtsPipelineConfig(PipelineConfig):
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         return {"talker": "tts_engine"}
 
+    @classmethod
+    def talker_sglang_role_to_stage(cls) -> dict[str, str]:
+        return {"talker": "tts_engine"}
+
     model_path: str
     stages: list[StageConfig] = [
         StageConfig(
@@ -68,7 +72,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             },
             gpu=0,
             runtime=StageRuntimeConfig(
-                resources=StageResourceConfig(total_gpu_memory_fraction=0.85)
+                resources=StageResourceConfig(total_gpu_memory_fraction=0.85),
             ),
             next="vocoder",
             stream_to=["vocoder"],

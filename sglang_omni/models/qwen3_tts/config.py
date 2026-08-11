@@ -32,6 +32,10 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         return {"talker": "tts_engine"}
 
     @classmethod
+    def talker_sglang_role_to_stage(cls) -> dict[str, str]:
+        return {"talker": "tts_engine"}
+
+    @classmethod
     def process_local_edges(cls) -> frozenset[tuple[str, str]]:
         # Note (Akazaakane): preprocessing stores prepared requests in the module-level
         # _PREPROCESSING_CONTEXT/_PREPARED_REQUESTS registries that the AR engine

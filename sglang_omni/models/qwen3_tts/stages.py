@@ -29,9 +29,13 @@ from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoi
 logger = logging.getLogger(__name__)
 
 _QWEN_TTS_INSTALL_HINT = (
-    "Qwen3-TTS support requires the official `qwen-tts` package. "
-    "Install `qwen-tts==0.1.1` and its Transformers 4.57.3 requirement "
-    "in the serving environment before launching Qwen3-TTS."
+    "Qwen3-TTS support requires the official `qwen-tts` package:\n"
+    "    apt-get update && apt-get install -y sox\n"
+    "    uv pip install --no-deps sox einops\n"
+    "    uv pip install --no-deps qwen-tts==0.1.1\n"
+    "`--no-deps` is required on both lines: qwen-tts pins Transformers 4.57.3, "
+    "and resolving sox lifts numpy past the numba==0.65.1 ceiling. See "
+    "docs/cookbook/qwen3_tts.md."
 )
 
 
@@ -115,10 +119,19 @@ def _compile_qwen3_tts_backbone(model: Any) -> None:
     ]
 
 
-def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
+def create_preprocessing_executor(
+    model_path: str,
+    *,
+    max_concurrency: int = 8,
+) -> SimpleScheduler:
     del model_path
+    # note (luojiaxuan): preprocessing must admit several requests at once. A
+    # serial executor keeps at most one reference-code request in flight, so
+    # the speech-tokenizer batcher would only ever see batches of one; the
+    # default matches the batcher's max_batch_size.
     return SimpleScheduler(
         preprocess_qwen3_tts_payload,
+        max_concurrency=max_concurrency,
         abort_callback=cleanup_prepared_qwen3_tts_request,
     )
 
@@ -166,6 +179,7 @@ def create_vocoder_executor(
     initial_batch_wait_ms: int = 2,
     followup_max_batch_size: int = 8,
     followup_batch_wait_ms: int = 1,
+    initial_cuda_graph: bool = True,
 ) -> SimpleScheduler:
     if gpu_id is not None:
         device = f"cuda:{gpu_id}"
@@ -190,4 +204,5 @@ def create_vocoder_executor(
         initial_batch_wait_ms=initial_batch_wait_ms,
         followup_max_batch_size=followup_max_batch_size,
         followup_batch_wait_ms=followup_batch_wait_ms,
+        initial_cuda_graph=initial_cuda_graph,
     )
