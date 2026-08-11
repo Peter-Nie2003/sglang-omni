@@ -144,9 +144,8 @@ when `process` is unset, and it cannot be shared with another stage.
 The config compiler groups stages by Process Name, attaches the sparse
 `processes` replica policy, and validates the resulting topology once. A
 cross-process edge derived from `next`, `stream_to`, or `wait_for` is rejected
-only when the model lists it in `process_local_edges()`. The matching
-`process_edge_resources()` fractions are then applied to stages that declare
-none of their own. Membership is final after this step.
+only when the model lists it in `process_local_edges()`. Membership is final
+after this step; GPU memory fractions remain explicit stage configuration.
 
 `ProcessConfig` is the value type of that mapping:
 

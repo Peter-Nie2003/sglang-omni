@@ -468,10 +468,6 @@ def test_pipeline_stage_wiring():
     assert topology.stage_to_process["tts_engine"] == "pipeline"
     assert topology.stage_to_process["vocoder"] == "vocoder"
     assert config.process_local_edges() == frozenset({("preprocessing", "tts_engine")})
-    edge_resources = config.process_edge_resources()[("tts_engine", "vocoder")]
-    assert edge_resources["preprocessing"] == pytest.approx(0.15)
-    assert edge_resources["tts_engine"] == pytest.approx(0.67)
-    assert edge_resources["vocoder"] == pytest.approx(0.18)
 
     colocated = MossTTSLocalColocatedPipelineConfig(
         model_path="OpenMOSS-Team/moss-local-test"

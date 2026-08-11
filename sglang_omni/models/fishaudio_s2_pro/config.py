@@ -24,17 +24,6 @@ class S2ProPipelineConfig(PipelineConfig):
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:
         return {"generation": "tts_engine"}
 
-    @classmethod
-    def process_edge_resources(
-        cls,
-    ) -> dict[tuple[str, str], dict[str, float]]:
-        return {
-            ("tts_engine", "vocoder"): {
-                "tts_engine": 0.85,
-                "vocoder": 0.10,
-            }
-        }
-
     model_path: str
     stages: list[StageConfig] = [
         StageConfig(
