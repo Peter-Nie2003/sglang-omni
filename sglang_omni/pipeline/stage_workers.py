@@ -58,6 +58,7 @@ class StageLaunchConfig:
     factory: str = ""
     factory_args: dict[str, Any] = field(default_factory=dict)
     factory_arg_defaults: dict[str, Any] = field(default_factory=dict)
+    require_factory_gpu_id: bool = False
     env_defaults: dict[str, str] = field(default_factory=dict)
 
     # Routing: static next stage(s)
@@ -770,6 +771,8 @@ def _construct_scheduler(
         factory,
         spec.factory_args,
         defaults=spec.factory_arg_defaults,
+        require_gpu_id=spec.require_factory_gpu_id,
+        stage_name=spec.stage_name,
     )
     if gpu_id is None:
         return factory(**factory_args)

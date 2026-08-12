@@ -468,7 +468,10 @@ def test_runner_copies_whole_process_and_injects_replica_devices(tmp_path) -> No
                 import_string(spec.factory),
                 spec.factory_args,
                 defaults=spec.factory_arg_defaults,
+                require_gpu_id=spec.require_factory_gpu_id,
+                stage_name=spec.stage_name,
             )
+            assert spec.require_factory_gpu_id is True
             assert factory_args["gpu_id"] == gpu_id
 
 

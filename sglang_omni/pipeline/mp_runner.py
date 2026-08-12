@@ -19,6 +19,7 @@ from sglang_omni.config.placement import (
     resolve_stage_gpu_ids,
 )
 from sglang_omni.config.runtime import (
+    requires_factory_gpu_id,
     resolve_stage_factory_arg_defaults,
     resolve_stage_static_factory_args,
 )
@@ -119,6 +120,7 @@ def _build_stage_groups(
             stream_done_to_fn=stage_cfg.stream_done_to_fn,
             gpu_stage_names=gpu_stage_names,
             stage_gpu_ids=stage_gpu_ids,
+            require_factory_gpu_id=requires_factory_gpu_id(stage_cfg, config),
             same_process_targets=same_process_targets,
             is_stream_receiver=stage_cfg.name in stream_receivers,
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
