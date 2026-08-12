@@ -448,6 +448,7 @@ def _apply_stage_gpu_override(
     pipeline_config: PipelineConfig,
     *,
     stage_name: str,
+    flag_name: str,
     gpu: int | None,
 ) -> None:
     if gpu is None:
@@ -458,7 +459,24 @@ def _apply_stage_gpu_override(
         reason=f"GPU placement to {gpu}",
     )
     for stage in matching_stages:
+        _validate_stage_gpu_override(pipeline_config, stage, flag_name)
         stage.gpu = gpu
+
+
+def _validate_stage_gpu_override(
+    pipeline_config: PipelineConfig,
+    stage: StageConfig,
+    flag_name: str,
+) -> None:
+    process_name = stage.process or stage.name
+    process_config = pipeline_config.processes.get(process_name)
+    if process_config is None or process_config.replica_devices is None:
+        return
+    raise typer.BadParameter(
+        f"{flag_name} cannot override GPU placement for stage {stage.name!r} "
+        f"because process {process_name!r} declares replica_devices; update "
+        f"processes.{process_name}.replica_devices instead"
+    )
 
 
 def _validate_colocated_gpu_override(
@@ -567,6 +585,7 @@ def _apply_tp_cli_override(
     pipeline_config: PipelineConfig,
     *,
     stage_name: str,
+    gpu_flag_name: str,
     tp_size: int | None,
     gpu: int | list[int] | None,
 ) -> None:
@@ -578,6 +597,8 @@ def _apply_tp_cli_override(
         reason="tensor parallel settings",
     )
     for stage in stages:
+        if gpu is not None:
+            _validate_stage_gpu_override(pipeline_config, stage, gpu_flag_name)
         if tp_size is not None:
             stage.tp_size = int(tp_size)
             stage.parallelism.tp = stage.tp_size
@@ -654,6 +675,7 @@ def apply_parallelism_cli_overrides(
     _apply_tp_cli_override(
         pipeline_config,
         stage_name="thinker",
+        gpu_flag_name="--thinker-gpus",
         tp_size=thinker_tp_size,
         gpu=thinker_gpu_override,
     )
@@ -666,6 +688,7 @@ def apply_parallelism_cli_overrides(
     _apply_tp_cli_override(
         pipeline_config,
         stage_name="image_encoder",
+        gpu_flag_name="--image-encoder-gpus",
         tp_size=image_encoder_tp_size,
         gpu=image_encoder_gpu_override,
     )
@@ -703,12 +726,14 @@ def apply_parallelism_cli_overrides(
         _apply_stage_gpu_override(
             pipeline_config,
             stage_name=talker_stage,
+            flag_name="--talker-gpu",
             gpu=talker_gpu,
         )
     if code2wav_stage is not None:
         _apply_stage_gpu_override(
             pipeline_config,
             stage_name=code2wav_stage,
+            flag_name="--code2wav-gpu",
             gpu=code2wav_gpu,
         )
     pipeline_config = _rebuild_parallelism_config(pipeline_config)
