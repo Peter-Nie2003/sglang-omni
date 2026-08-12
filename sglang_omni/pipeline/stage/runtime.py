@@ -146,7 +146,6 @@ class Stage:
 
         self._running = False
         self._aborted: set[str] = set()
-        self._finished_requests: set[str] = set()
         self._active_requests: set[str] = set()
         self._stream_queue: StreamQueue | None = None
         self._stream_chunk_counters: dict[tuple[str, str], int] = {}
@@ -163,11 +162,11 @@ class Stage:
     def _record_replica_bindings(
         self, request_id: str, bindings: dict[str, int] | None
     ) -> None:
-        # Note (wenyao): a late message would otherwise resurrect an entry
-        # nothing clears again.
         if not bindings:
             return
-        if request_id in self._aborted or request_id in self._finished_requests:
+        # Note (kaige): aborted requests may still have messages in flight,
+        # while successful IDs can be reused after their coordinator owner closes.
+        if request_id in self._aborted:
             return
         self._replica_bindings.setdefault(request_id, dict(bindings))
 
@@ -1624,7 +1623,6 @@ class Stage:
         self._clear_request_state(request_id)
 
     def _clear_request_state(self, request_id: str) -> None:
-        self._record_bounded_request_id(self._finished_requests, request_id)
         self._active_requests.discard(request_id)
         self.input_handler.cancel(request_id)
         if self._stream_queue is not None:
