@@ -953,6 +953,46 @@ def test_coordinator_projects_one_process_choice_onto_member_stages() -> None:
     asyncio.run(_run())
 
 
+def test_binding_validation_precedes_request_registration() -> None:
+    class FailOnceBindingPolicy:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def bind(self, process_name, num_replicas, request_id):
+            del process_name, request_id
+            self.calls += 1
+            return num_replicas if self.calls == 1 else 0
+
+    async def _run() -> None:
+        logical_plan, replica_topology = _linear_replica_runtime(tail=2)
+        policy = FailOnceBindingPolicy()
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="normalize",
+            replica_topology=replica_topology,
+            logical_process_plan=logical_plan,
+            binding_policy=policy,
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("normalize", "inproc://normalize")
+
+        with pytest.raises(ValueError, match="selected replica 2"):
+            await coordinator._submit_request("req-retry", "hello")
+
+        assert coordinator._requests == {}
+        assert coordinator._completion_futures == {}
+
+        await coordinator._submit_request("req-retry", "hello")
+        assert control_plane.submitted[0][2].replica_bindings == {
+            "decode": 0,
+            "postprocess": 0,
+        }
+
+    asyncio.run(_run())
+
+
 def test_coordinator_submits_to_the_bound_entry_replica() -> None:
     async def _run() -> None:
         logical_plan, replica_topology = _linear_replica_runtime(front=2)
