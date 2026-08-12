@@ -15,7 +15,12 @@ from sglang_omni.cli.serve import (
     apply_torch_compile_cli_overrides,
     serve,
 )
-from sglang_omni.config import PipelineConfig, StageConfig, resolve_stage_factory_args
+from sglang_omni.config import (
+    PipelineConfig,
+    ProcessConfig,
+    StageConfig,
+    resolve_stage_factory_args,
+)
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechColocatedPipelineConfig,
@@ -410,6 +415,52 @@ def test_speech_colocated_allows_gpu_override_to_same_gpu():
 
     assert next(stage for stage in config.stages if stage.name == "talker_ar").gpu == 0
     assert next(stage for stage in config.stages if stage.name == "code2wav").gpu == 0
+
+
+@pytest.mark.parametrize(
+    ("stage_name", "flag_name", "override_name", "override_value"),
+    [
+        ("thinker", "--thinker-gpus", "thinker_gpus", "3"),
+        (
+            "image_encoder",
+            "--image-encoder-gpus",
+            "image_encoder_gpus",
+            "3",
+        ),
+        ("talker_ar", "--talker-gpu", "talker_gpu", 3),
+        ("code2wav", "--code2wav-gpu", "code2wav_gpu", 3),
+    ],
+)
+def test_gpu_cli_override_rejects_process_replica_devices(
+    stage_name: str,
+    flag_name: str,
+    override_name: str,
+    override_value: str | int,
+) -> None:
+    config = Qwen3OmniSpeechPipelineConfig(
+        model_path="dummy",
+        processes={
+            stage_name: ProcessConfig(
+                num_replicas=2,
+                replica_devices=[1, 2],
+            )
+        },
+    )
+    overrides = {
+        "thinker_tp_size": None,
+        "thinker_gpus": None,
+        "image_encoder_tp_size": None,
+        "image_encoder_gpus": None,
+        "talker_gpu": None,
+        "code2wav_gpu": None,
+    }
+    overrides[override_name] = override_value
+
+    with pytest.raises(
+        typer.BadParameter,
+        match=rf"{flag_name}.*process {stage_name!r} declares replica_devices",
+    ):
+        apply_parallelism_cli_overrides(config, **overrides)
 
 
 def test_cuda_graph_cli_override_reaches_resolved_sglang_args():
