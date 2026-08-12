@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
-import pytest
+import asyncio
+from types import SimpleNamespace
 
+import pytest
+import torch
+
+from sglang_omni.config.topology import compile_logical_processes
+from sglang_omni.models.ming_tts.config import MingTTSPipelineConfig
+from sglang_omni.models.ming_tts.engine_io import make_ming_tts_scheduler_adapters
 from sglang_omni.models.ming_tts.payload_types import (
     MING_TTS_DEFAULT_MAX_DECODE_STEPS,
     MingTTSState,
@@ -19,6 +26,7 @@ from sglang_omni.models.ming_tts.tokenizer import (
     MingTTSTokenizerBundle,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
+from tests.unit_test.pipeline.helpers import round_trip_payload_over_shm
 
 
 class _FakeTokenizer:
@@ -70,6 +78,18 @@ def _payload(*, params: dict | None = None, tts_params: dict | None = None):
         ),
         data={},
     )
+
+
+def test_ming_frontend_edges_can_cross_process() -> None:
+    config = MingTTSPipelineConfig(model_path="model")
+    for stage in config.stages[:3]:
+        stage.process = stage.name
+
+    plan, _ = compile_logical_processes(config)
+
+    assert plan.stage_to_process["preprocessing"] == "preprocessing"
+    assert plan.stage_to_process["reference_encode"] == "reference_encode"
+    assert plan.stage_to_process["tts_engine"] == "tts_engine"
 
 
 def test_ming_tts_prompt_embedding_positions_match_special_tokens() -> None:
@@ -158,3 +178,78 @@ def test_ming_tts_rejects_reference_without_audio_path() -> None:
             tokenizer=_tokenizer(),
             context_length=MING_TTS_DEFAULT_MAX_DECODE_STEPS + 64,
         )
+
+
+@pytest.mark.parametrize("with_reference", [False, True])
+def test_ming_frontend_payload_survives_cross_process_wire(
+    with_reference: bool,
+) -> None:
+    tokenizer = _tokenizer()
+    payload = (
+        _reference_payload(
+            {"audio_path": "/tmp/reference.wav", "text": "reference text"}
+        )
+        if with_reference
+        else _payload()
+    )
+    preprocessed = preprocess_ming_tts_payload(
+        payload,
+        tokenizer=tokenizer,
+        context_length=512,
+    )
+    reference_input = asyncio.run(
+        round_trip_payload_over_shm(
+            preprocessed,
+            from_stage="preprocessing",
+            to_stage="reference_encode",
+        )
+    )
+
+    from sglang_omni.models.ming_tts.reference_encode import MingTTSReferenceEncoder
+
+    speaker_embedding = torch.tensor([[0.25, 0.75]], dtype=torch.float32)
+    prompt_latent = torch.tensor(
+        [[[1.0, 2.0], [3.0, 4.0]]],
+        dtype=torch.float32,
+    )
+
+    def encode_reference(ref_audio: str) -> dict:
+        assert ref_audio == "/tmp/reference.wav"
+        return {
+            "spk_emb": speaker_embedding,
+            "prompt_latent": prompt_latent,
+            "prompt_latent_token_count": 2,
+        }
+
+    encoder = MingTTSReferenceEncoder.__new__(MingTTSReferenceEncoder)
+    encoder._service = None
+    encoder._encode_reference = encode_reference
+    engine_input = encoder.encode_payload(
+        reference_input,
+        tokenizer=tokenizer,
+        context_length=512,
+    )
+    restored = asyncio.run(
+        round_trip_payload_over_shm(
+            engine_input,
+            from_stage="reference_encode",
+            to_stage="tts_engine",
+        )
+    )
+    request_builder, _ = make_ming_tts_scheduler_adapters(
+        model=SimpleNamespace(config=SimpleNamespace(vocab_size=128)),
+        tokenizer=tokenizer,
+        reset_request=lambda request_id: None,
+    )
+    request_data = request_builder(restored)
+
+    assert request_data.state.text == "hello"
+    assert request_data.input_ids.tolist() == request_data.state.input_ids
+    assert request_data.input_embeds_are_projected is with_reference
+    if with_reference:
+        assert torch.equal(request_data.state.spk_emb, speaker_embedding)
+        assert torch.equal(request_data.state.prompt_latent, prompt_latent)
+        assert request_data.state.prompt_text == "reference text"
+    else:
+        assert request_data.state.spk_emb is None
+        assert request_data.state.prompt_latent is None

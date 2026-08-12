@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import torch
 
+from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
@@ -19,7 +20,10 @@ from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from tests.unit_test.fakes import FakeExecutionBridge, FakeServerArgs
-from tests.unit_test.pipeline.helpers import build_compiled_process_topology
+from tests.unit_test.pipeline.helpers import (
+    build_compiled_process_topology,
+    round_trip_payload_over_shm,
+)
 
 
 def test_voxtral_tts_config_uses_current_stage_schema() -> None:
@@ -48,6 +52,17 @@ def test_voxtral_tts_config_uses_current_stage_schema() -> None:
         PIPELINE_CONFIG_REGISTRY.get_config("VoxtralTTSForConditionalGeneration")
         is VoxtralTTSPipelineConfig
     )
+
+
+def test_voxtral_preprocessing_can_cross_process() -> None:
+    config = VoxtralTTSPipelineConfig(model_path="model")
+    config.stages[0].process = "preprocessing"
+    config.stages[1].process = "generation"
+
+    plan, _ = compile_logical_processes(config)
+
+    assert plan.stage_to_process["preprocessing"] == "preprocessing"
+    assert plan.stage_to_process["tts_generation"] == "generation"
 
 
 def test_voxtral_radix_cache_is_namespaced_by_voice() -> None:
@@ -89,6 +104,68 @@ def test_voxtral_radix_cache_is_namespaced_by_voice() -> None:
     assert cheerful.req.extra_key != neutral.req.extra_key
     assert cheerful.req.extra_key.startswith("voxtral_voice:")
     assert cheerful.voice_embedding is voice_embeddings["cheerful_female"]
+
+
+def test_voxtral_preprocessing_payload_survives_cross_process_wire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeSpeechRequest:
+        def __init__(self, *, input: str, voice: str) -> None:
+            self.input = input
+            self.voice = voice
+
+    class FakeMistralTokenizer:
+        @classmethod
+        def from_file(cls, path: str):
+            assert path.endswith("tekken.json")
+            return cls()
+
+        def encode_speech_request(self, request: FakeSpeechRequest):
+            assert request.input == "hello"
+            assert request.voice == "neutral_female"
+            return SimpleNamespace(tokens=[11, 12, 13])
+
+    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(
+        stages,
+        "_import_mistral_common_for_voxtral",
+        lambda: (FakeSpeechRequest, FakeMistralTokenizer),
+    )
+    scheduler = stages.create_preprocessing_executor("model")
+    payload = StagePayload(
+        request_id="voxtral-cross-process",
+        request=OmniRequest(
+            inputs="hello",
+            params={"max_new_tokens": 32},
+            metadata={"tts_params": {"voice": "neutral_female"}},
+        ),
+        data={},
+    )
+
+    preprocessed = scheduler._fn(payload)
+    restored = asyncio.run(
+        round_trip_payload_over_shm(
+            preprocessed,
+            from_stage="preprocessing",
+            to_stage="tts_generation",
+        )
+    )
+    model = SimpleNamespace(
+        audio_token_id=24,
+        voxtral_config=SimpleNamespace(
+            text_config=SimpleNamespace(vocab_size=32000),
+        ),
+    )
+    voice_embedding = torch.ones(2, 4)
+    request_data = build_sglang_voxtral_request(
+        restored,
+        model=model,
+        voice_embeddings={"neutral_female": voice_embedding},
+    )
+
+    assert request_data.input_ids.tolist() == [11, 12, 13]
+    assert request_data.max_new_tokens == 32
+    assert request_data.voice_embedding is voice_embedding
 
 
 def test_voxtral_speech_validation_accepts_supported_fields() -> None:

@@ -80,6 +80,14 @@ or regrouped under another process name.
 Audar-TTS and Zonos2 carry stage state in `StagePayload.data`, so neither
 declares a process-local edge.
 
+Voxtral carries the preprocessing output (`input_ids`, `voice`, and generation
+limits) in `StagePayload.data` before `tts_generation`. Ming does the same for
+its preprocessing fields, then serializes the reference encoder's
+`spk_emb` and `prompt_latent` tensors with the `typed_tensor` wire codec before
+`tts_engine`. These handoffs are therefore valid across process boundaries;
+the unit suite exercises each boundary through the production SHM payload and
+control-message serialization path.
+
 ## Process Replicas
 
 `PipelineConfig.processes` gives a Process more than one instance. A replica
