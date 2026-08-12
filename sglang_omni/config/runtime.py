@@ -11,6 +11,7 @@ from sglang_omni.config.schema import (
     PipelineConfig,
     StageConfig,
     parse_replica_instance_name,
+    stage_process_name,
 )
 from sglang_omni.utils.imports import import_string
 
@@ -38,6 +39,8 @@ def resolve_stage_factory_args(
             global_cfg,
             gpu_id=gpu_id,
         ),
+        require_gpu_id=requires_factory_gpu_id(stage_cfg, global_cfg),
+        stage_name=stage_cfg.name,
     )
 
 
@@ -84,8 +87,6 @@ def resolve_stage_factory_arg_defaults(
     defaults: dict[str, Any] = {"model_path": global_cfg.model_path}
     if gpu_id is None:
         gpu_id = _resolve_primary_gpu_id(stage_cfg, global_cfg)
-    # TODO (kaige): Migrate legacy device-only factories before enabling
-    # process replica device remapping for those models.
     defaults["gpu_id"] = gpu_id
     total_gpu_memory_fraction = stage_cfg.runtime.resources.total_gpu_memory_fraction
     if total_gpu_memory_fraction is not None:
@@ -98,17 +99,39 @@ def resolve_factory_signature_args(
     args: dict[str, Any],
     *,
     defaults: Mapping[str, Any],
+    require_gpu_id: bool = False,
+    stage_name: str | None = None,
 ) -> dict[str, Any]:
     """Inject standard factory kwargs when the resolved factory declares them."""
 
     args = dict(args)
     sig = inspect.signature(factory)
+    if require_gpu_id and "gpu_id" not in sig.parameters:
+        factory_name = f"{factory.__module__}.{factory.__qualname__}"
+        stage_context = f"Stage {stage_name!r} " if stage_name is not None else "Stage "
+        raise ValueError(
+            f"{stage_context}uses processes.replica_devices, but factory "
+            f"{factory_name!r} does not declare a gpu_id parameter"
+        )
 
     for name, value in defaults.items():
         if name in sig.parameters and name not in args:
             args[name] = value
 
     return args
+
+
+def requires_factory_gpu_id(
+    stage_cfg: StageConfig,
+    global_cfg: PipelineConfig,
+) -> bool:
+    """Return whether replica placement requires an explicit gpu_id contract."""
+
+    if stage_cfg.gpu is None:
+        return False
+    process_name, _ = parse_replica_instance_name(stage_process_name(stage_cfg))
+    process_cfg = global_cfg.processes.get(process_name)
+    return process_cfg is not None and process_cfg.replica_devices is not None
 
 
 def reject_untyped_total_gpu_memory_fraction(
