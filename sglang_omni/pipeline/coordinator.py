@@ -427,6 +427,17 @@ class Coordinator:
         if not isinstance(request, OmniRequest):
             request = OmniRequest(inputs=request)
 
+        replica_bindings = assign_replica_bindings(
+            self._logical_process_plan, self._binding_policy, request_id
+        )
+        bindings = replica_bindings or {}
+        entry_instance = (
+            self._replica_topology.resolve(self.entry_stage, bindings[self.entry_stage])
+            if self._replica_topology.is_replicated(self.entry_stage)
+            else self.entry_stage
+        )
+        entry_info = self._stages[entry_instance]
+
         # Track request
         self._requests[request_id] = RequestInfo(
             request_id=request_id,
@@ -455,19 +466,6 @@ class Coordinator:
             metadata={"entry_stage": self.entry_stage},
         )
 
-        replica_bindings = assign_replica_bindings(
-            self._logical_process_plan, self._binding_policy, request_id
-        )
-
-        bindings = replica_bindings or {}
-        entry_instance = (
-            self._replica_topology.resolve(
-                self.entry_stage, bindings[self.entry_stage]
-            )
-            if self._replica_topology.is_replicated(self.entry_stage)
-            else self.entry_stage
-        )
-        entry_info = self._stages[entry_instance]
         await self.control_plane.submit_to_stage(
             entry_instance,
             entry_info.control_endpoint,
