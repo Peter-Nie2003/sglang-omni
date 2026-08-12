@@ -259,6 +259,12 @@ def runtime_factory_without_total_budget(
     }
 
 
+def runtime_factory_with_device(
+    *, model_path: str, device: Any = "cuda:0"
+) -> dict[str, Any]:
+    return {"model_path": model_path, "device": device}
+
+
 def make_scheduler_accepting_model_path(
     model_path: str, **kwargs: Any
 ) -> FakeScheduler:

@@ -182,6 +182,10 @@ non-TP process with GPU stages needs one device id per replica; a TP process
 with size T needs N x T ids, split into per-replica rank groups. A pure CPU
 process must not declare devices.
 
+Every GPU-stage factory governed by `replica_devices` must accept an explicit
+`gpu_id` keyword argument. Runtime preparation rejects factories without that
+contract instead of translating placement into a legacy `device` argument.
+
 Because a replicated process resolves its devices here rather than from
 `StageConfig.gpu`, replica placement is included in GPU colocation validation.
 When `require_memory_fraction_for_colocation` is `true`, every GPU shared by

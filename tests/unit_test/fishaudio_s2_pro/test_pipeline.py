@@ -15,6 +15,8 @@ import torch
 import typer
 
 from sglang_omni.cli.serve import apply_torch_compile_cli_overrides
+from sglang_omni.config import ProcessConfig, resolve_stage_factory_args
+from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.tokenizer import (
     IM_END_TOKEN,
@@ -32,6 +34,7 @@ from sglang_omni.models.fishaudio_s2_pro.tokenizer import (
     Reference,
     S2ProTokenizerAdapter,
 )
+from sglang_omni.pipeline.replicas import expand_replica_stages
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 from tests.unit_test.fakes import FakeServerArgs
 from tests.unit_test.fixtures.fish_fakes import (
@@ -109,6 +112,33 @@ def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
     assert prompt["vq_mask_tokens"].sum().item() == 2
     assert torch.equal(prompt["vq_parts"][0], torch.tensor([[0, 1], [10, 11]]))
     assert any("<|speaker:alice|>target" in text for text in tokenizer.encoded_texts)
+
+
+def test_fish_process_replica_devices_reject_device_only_engine_factory() -> None:
+    config = S2ProPipelineConfig(
+        model_path="model",
+        processes={"pipeline": ProcessConfig(num_replicas=2, replica_devices=[1, 2])},
+    )
+    process_plan, stages = compile_logical_processes(config)
+    expanded, _ = expand_replica_stages(stages, process_plan)
+    by_name = {stage.name: stage for stage in expanded}
+
+    with pytest.raises(
+        ValueError,
+        match="tts_engine@r0.*replica_devices.*does not declare a gpu_id parameter",
+    ):
+        resolve_stage_factory_args(by_name["tts_engine@r0"], config, gpu_id=1)
+
+    vocoder_gpu_ids = [
+        resolve_stage_factory_args(
+            by_name[f"vocoder@r{replica_id}"],
+            config,
+            gpu_id=gpu_id,
+        )["gpu_id"]
+        for replica_id, gpu_id in enumerate((1, 2))
+    ]
+
+    assert vocoder_gpu_ids == [1, 2]
 
 
 @pytest.mark.parametrize(
