@@ -180,6 +180,17 @@ class MingTTSPipelineConfig(PipelineConfig):
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:
         return {"generation": TTS_ENGINE_STAGE}
 
+    @classmethod
+    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
+        # Note (kaige): both payloads are transport-complete, but preserve the
+        # previous process-split allowlist in this PR and relax it separately.
+        return frozenset(
+            {
+                (PREPROCESSING_STAGE, REFERENCE_ENCODE_STAGE),
+                (REFERENCE_ENCODE_STAGE, TTS_ENGINE_STAGE),
+            }
+        )
+
     model_path: str
     entry_stage: str = PREPROCESSING_STAGE
     stages: list[StageConfig] = [

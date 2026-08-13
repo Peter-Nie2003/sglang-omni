@@ -49,10 +49,11 @@ The compiler enumerates every cross-process edge of the final topology from
 contract:
 
 - `process_local_edges()` — which handoffs must stay inside one process because
-  the payload does not carry required process-local state. Edges are splittable
-  by default. The exception is declared per **edge**, not per stage, because
-  grouping `preprocessing` with `audio_encoder` leaves their shared handoff local
-  while still permitting `audio_encoder -> tts_engine` to cross processes.
+  the payload does not carry required process-local state, or because the model
+  retains an established compatibility boundary. Edges are splittable by
+  default. The exception is declared per **edge**, not per stage, because grouping
+  `preprocessing` with `audio_encoder` leaves their shared handoff local while
+  still permitting `audio_encoder -> tts_engine` to cross processes.
 
 The contract is checked once while compiling the config, including for edges
 that tensor parallelism creates by putting a TP stage in its own process.
@@ -63,8 +64,8 @@ that tensor parallelism creates by putting a TP stage in its own process.
 | --- | --- |
 | Higgs-TTS | — |
 | FishAudio S2-Pro | — |
-| Voxtral TTS | — |
-| Ming-Omni-TTS | — |
+| Voxtral TTS | `preprocessing -> tts_generation` — compatibility guard preserving the previous process-split allowlist |
+| Ming-Omni-TTS | `preprocessing -> reference_encode`, `reference_encode -> tts_engine` — compatibility guards preserving the previous process-split allowlist |
 | MOSS-TTS Local (single-GPU) | `preprocessing -> tts_engine` — preprocessing publishes into a process-local `PreparedRequestQueue` the AR stage pops |
 | MOSS-TTS Local (split) | all pipeline edges; placement declares GPU 0 while the codec runs on `cuda:1` |
 | Qwen3-TTS | `preprocessing -> tts_engine` — prepared requests live in `_PREPROCESSING_CONTEXT` / `_PREPARED_REQUESTS`, read in-process by the AR engine builder |
@@ -82,11 +83,12 @@ declares a process-local edge.
 
 Voxtral carries the preprocessing output (`input_ids`, `voice`, and generation
 limits) in `StagePayload.data` before `tts_generation`. Ming does the same for
-its preprocessing fields, then serializes the reference encoder's
-`spk_emb` and `prompt_latent` tensors with the `typed_tensor` wire codec before
-`tts_engine`. These handoffs are therefore valid across process boundaries;
-the unit suite exercises each boundary through the production SHM payload and
-control-message serialization path.
+its preprocessing fields, then serializes the reference encoder's `spk_emb` and
+`prompt_latent` tensors with the `typed_tensor` wire codec before `tts_engine`.
+The unit suite verifies those wire contracts in separate spawned workers through
+the production control plane and SHM relay. The model configs still reject these
+splits so this change does not expand the previously supported topology surface;
+they can be enabled separately after model-level rollout validation.
 
 ## Process Replicas
 
