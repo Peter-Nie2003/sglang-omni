@@ -977,25 +977,13 @@ def make_thinker_stream_output_builder():
         extra = req_output.extra
         if isinstance(extra, dict) and "hidden_states" in extra:
             embed, layer_hidden = _split_dual_layer_hidden(extra["hidden_states"])
-            if embed is not None:
-                metadata = {"token_id": token_id}
-                if layer_hidden is not None:
-                    metadata["layer_hidden"] = layer_hidden
+            hidden = layer_hidden if layer_hidden is not None else embed
+            if hidden is not None:
                 messages.append(
                     OutgoingMessage(
                         request_id=request_id,
                         type="stream",
-                        data=embed,
-                        target="talker_ar",
-                        metadata=metadata,
-                    )
-                )
-            elif layer_hidden is not None:
-                messages.append(
-                    OutgoingMessage(
-                        request_id=request_id,
-                        type="stream",
-                        data=layer_hidden,
+                        data=hidden,
                         target="talker_ar",
                         metadata={"token_id": token_id},
                     )
