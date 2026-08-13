@@ -4,26 +4,96 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import os
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
 import torch
 
-from sglang_omni.config.topology import compile_logical_processes
+from sglang_omni.config import EndpointsConfig, PipelineConfig, StageConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.models.voxtral_tts.pipeline import stages
 from sglang_omni.models.voxtral_tts.request_builders import build_sglang_voxtral_request
+from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from tests.unit_test.fakes import FakeExecutionBridge, FakeServerArgs
-from tests.unit_test.pipeline.helpers import (
-    build_compiled_process_topology,
-    round_trip_payload_over_shm,
-)
+from tests.unit_test.pipeline.helpers import build_compiled_process_topology
+
+
+class _ProbeSpeechRequest:
+    def __init__(self, *, input: str, voice: str) -> None:
+        self.input = input
+        self.voice = voice
+
+
+class _ProbeMistralTokenizer:
+    @classmethod
+    def from_file(cls, path: str) -> "_ProbeMistralTokenizer":
+        assert path.endswith("tekken.json")
+        return cls()
+
+    def encode_speech_request(self, request: _ProbeSpeechRequest) -> Any:
+        assert request.input == "hello"
+        assert request.voice == "neutral_female"
+        return SimpleNamespace(tokens=[11, 12, 13])
+
+
+def _make_voxtral_process_edge_scheduler(*, model_path: str, role: str) -> Any:
+    """Run the real Voxtral edge adapters in independently spawned workers."""
+
+    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+
+    if role == "preprocessing":
+        stages._resolve_checkpoint = lambda path: path
+        stages._import_mistral_common_for_voxtral = lambda: (
+            _ProbeSpeechRequest,
+            _ProbeMistralTokenizer,
+        )
+        preprocessing = stages.create_preprocessing_executor(model_path)
+
+        def compute(payload: StagePayload) -> StagePayload:
+            result = preprocessing._fn(payload)
+            result.data["probe_preprocessing_pid"] = os.getpid()
+            return result
+
+        return SimpleScheduler(compute)
+
+    if role == "generation":
+        model = SimpleNamespace(
+            audio_token_id=24,
+            voxtral_config=SimpleNamespace(
+                text_config=SimpleNamespace(vocab_size=32000),
+            ),
+        )
+        voice_embedding = torch.ones(2, 4)
+
+        def compute(payload: StagePayload) -> StagePayload:
+            request_data = build_sglang_voxtral_request(
+                payload,
+                model=model,
+                voice_embeddings={"neutral_female": voice_embedding},
+            )
+            payload.data.update(
+                {
+                    "probe_generation_pid": os.getpid(),
+                    "probe_input_ids": request_data.input_ids.tolist(),
+                    "probe_max_new_tokens": request_data.max_new_tokens,
+                    "probe_voice_loaded": (
+                        request_data.voice_embedding is voice_embedding
+                    ),
+                }
+            )
+            return payload
+
+        return SimpleScheduler(compute)
+
+    raise ValueError(f"unknown Voxtral process-edge probe role: {role!r}")
 
 
 def test_voxtral_tts_config_uses_current_stage_schema() -> None:
@@ -54,15 +124,28 @@ def test_voxtral_tts_config_uses_current_stage_schema() -> None:
     )
 
 
-def test_voxtral_preprocessing_can_cross_process() -> None:
+def test_voxtral_preprocessing_remains_process_local_for_compatibility() -> None:
     config = VoxtralTTSPipelineConfig(model_path="model")
-    config.stages[0].process = "preprocessing"
-    config.stages[1].process = "generation"
+    config.stages[0].process = "voxtral_preprocessing"
 
-    plan, _ = compile_logical_processes(config)
+    assert config.process_local_edges() == frozenset(
+        {("preprocessing", "tts_generation")}
+    )
+    with pytest.raises(ValueError, match="Cross-process edge"):
+        build_compiled_process_topology(config)
 
-    assert plan.stage_to_process["preprocessing"] == "preprocessing"
-    assert plan.stage_to_process["tts_generation"] == "generation"
+
+def test_voxtral_generation_to_vocoder_remains_cross_process_safe() -> None:
+    config = VoxtralTTSPipelineConfig(model_path="model")
+    generation, vocoder = config.stages[1:]
+    vocoder.process = "voxtral_vocoder"
+    generation.runtime.resources.total_gpu_memory_fraction = 0.85
+    vocoder.runtime.resources.total_gpu_memory_fraction = 0.10
+
+    plan = build_compiled_process_topology(config)
+
+    assert plan.stage_to_process["tts_generation"] == "pipeline"
+    assert plan.stage_to_process["vocoder"] == "voxtral_vocoder"
 
 
 def test_voxtral_radix_cache_is_namespaced_by_voice() -> None:
@@ -106,66 +189,61 @@ def test_voxtral_radix_cache_is_namespaced_by_voice() -> None:
     assert cheerful.voice_embedding is voice_embeddings["cheerful_female"]
 
 
-def test_voxtral_preprocessing_payload_survives_cross_process_wire(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.asyncio
+async def test_voxtral_preprocessing_wire_contract_crosses_a_process_boundary(
+    tmp_path,
 ) -> None:
-    class FakeSpeechRequest:
-        def __init__(self, *, input: str, voice: str) -> None:
-            self.input = input
-            self.voice = voice
-
-    class FakeMistralTokenizer:
-        @classmethod
-        def from_file(cls, path: str):
-            assert path.endswith("tekken.json")
-            return cls()
-
-        def encode_speech_request(self, request: FakeSpeechRequest):
-            assert request.input == "hello"
-            assert request.voice == "neutral_female"
-            return SimpleNamespace(tokens=[11, 12, 13])
-
-    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
-    monkeypatch.setattr(
-        stages,
-        "_import_mistral_common_for_voxtral",
-        lambda: (FakeSpeechRequest, FakeMistralTokenizer),
+    factory = f"{__name__}._make_voxtral_process_edge_scheduler"
+    config = PipelineConfig(
+        model_path="model",
+        entry_stage="preprocessing",
+        stages=[
+            StageConfig(
+                name="preprocessing",
+                process="voxtral_preprocessing",
+                factory=factory,
+                factory_args={"role": "preprocessing"},
+                next="tts_generation",
+            ),
+            StageConfig(
+                name="tts_generation",
+                process="voxtral_generation",
+                factory=factory,
+                factory_args={"role": "generation"},
+                terminal=True,
+            ),
+        ],
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
     )
-    scheduler = stages.create_preprocessing_executor("model")
-    payload = StagePayload(
-        request_id="voxtral-cross-process",
-        request=OmniRequest(
-            inputs="hello",
-            params={"max_new_tokens": 32},
-            metadata={"tts_params": {"voice": "neutral_female"}},
-        ),
-        data={},
-    )
+    runner = MultiProcessPipelineRunner(config)
 
-    preprocessed = scheduler._fn(payload)
-    restored = asyncio.run(
-        round_trip_payload_over_shm(
-            preprocessed,
-            from_stage="preprocessing",
-            to_stage="tts_generation",
+    await runner.start(timeout=30.0)
+    processes = [process for group in runner._groups for process in group.processes]
+    try:
+        result = await asyncio.wait_for(
+            runner.coordinator.submit(
+                "voxtral-cross-process",
+                OmniRequest(
+                    inputs="hello",
+                    params={"max_new_tokens": 32},
+                    metadata={"tts_params": {"voice": "neutral_female"}},
+                ),
+            ),
+            timeout=15.0,
         )
-    )
-    model = SimpleNamespace(
-        audio_token_id=24,
-        voxtral_config=SimpleNamespace(
-            text_config=SimpleNamespace(vocab_size=32000),
-        ),
-    )
-    voice_embedding = torch.ones(2, 4)
-    request_data = build_sglang_voxtral_request(
-        restored,
-        model=model,
-        voice_embeddings={"neutral_female": voice_embedding},
-    )
+    finally:
+        await runner.stop()
 
-    assert request_data.input_ids.tolist() == [11, 12, 13]
-    assert request_data.max_new_tokens == 32
-    assert request_data.voice_embedding is voice_embedding
+    assert result["probe_input_ids"] == [11, 12, 13]
+    assert result["probe_max_new_tokens"] == 32
+    assert result["probe_voice_loaded"] is True
+    assert result["input_ids"] == [11, 12, 13]
+    assert result["voice"] == "neutral_female"
+    assert result["max_new_tokens"] == 32
+    assert result["probe_preprocessing_pid"] != result["probe_generation_pid"]
+    assert all(not process.is_alive() for process in processes)
+    assert [process.exitcode for process in processes] == [0, 0]
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_voxtral_speech_validation_accepts_supported_fields() -> None:
