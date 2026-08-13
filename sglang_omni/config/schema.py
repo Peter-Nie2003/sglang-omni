@@ -365,8 +365,10 @@ class PipelineConfig(BaseModel):
         ``preprocessing`` with ``audio_encoder`` leaves their shared handoff
         local and permits ``audio_encoder -> tts_engine`` to cross processes.
 
-        Declare an edge only when the downstream stage depends on process-local
-        state that the payload does not carry.
+        Declare an edge when the downstream stage depends on process-local
+        state that the payload does not carry. A model may also retain an edge
+        temporarily to preserve an established support boundary; document that
+        compatibility guard at the declaration.
         """
         return frozenset()
 

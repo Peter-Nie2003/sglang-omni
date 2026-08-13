@@ -23,6 +23,12 @@ class VoxtralTTSPipelineConfig(PipelineConfig):
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:
         return {"generation": "tts_generation"}
 
+    @classmethod
+    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
+        # Note (kaige): this payload is transport-complete, but preserve the
+        # previous process-split allowlist in this PR and relax it separately.
+        return frozenset({(PREPROCESSING_STAGE, GENERATION_STAGE)})
+
     model_path: str
     entry_stage: str = "preprocessing"
     stages: list[StageConfig] = [
