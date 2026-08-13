@@ -32,15 +32,15 @@ def test_config_manager_parses_dotted_fraction_overrides_as_numbers() -> None:
             "0.05",
             "--stages.2.runtime.resources.total-gpu-memory-fraction",
             "0.05",
-            "--stages.4.runtime.resources.total-gpu-memory-fraction",
+            "--stages.3.runtime.resources.total-gpu-memory-fraction",
             "0.35",
-            "--stages.4.runtime.sglang-server-args.mem-fraction-static",
+            "--stages.3.runtime.sglang-server-args.mem-fraction-static",
+            "0.35",
+            "--stages.5.runtime.resources.total-gpu-memory-fraction",
+            "0.35",
+            "--stages.5.runtime.sglang-server-args.mem-fraction-static",
             "0.35",
             "--stages.6.runtime.resources.total-gpu-memory-fraction",
-            "0.35",
-            "--stages.6.runtime.sglang-server-args.mem-fraction-static",
-            "0.35",
-            "--stages.7.runtime.resources.total-gpu-memory-fraction",
             "0.05",
         ]
     )
@@ -59,7 +59,7 @@ def test_config_manager_parses_dotted_fraction_overrides_as_numbers() -> None:
 
 def test_config_manager_dotted_tp_size_override_updates_parallelism_alias() -> None:
     manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
-    merged = manager.merge_config({"stages.4.tp_size": 2, "stages.4.gpu": [0, 1]})
+    merged = manager.merge_config({"stages.3.tp_size": 2, "stages.3.gpu": [0, 1]})
     thinker = _stage(merged, "thinker")
 
     assert thinker.tp_size == 2
@@ -70,7 +70,7 @@ def test_config_manager_dotted_tp_size_override_updates_parallelism_alias() -> N
 def test_config_manager_dotted_parallelism_override_updates_tp_size_alias() -> None:
     manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
     merged = manager.merge_config(
-        {"stages.4.parallelism.tp": 2, "stages.4.gpu": [0, 1]}
+        {"stages.3.parallelism.tp": 2, "stages.3.gpu": [0, 1]}
     )
     thinker = _stage(merged, "thinker")
 
@@ -109,9 +109,9 @@ def test_config_manager_rejects_trailing_key_without_value() -> None:
     with pytest.raises(ValueError, match="Missing value"):
         manager.parse_extra_args(
             [
-                "--stages.4.runtime.resources.total-gpu-memory-fraction",
+                "--stages.3.runtime.resources.total-gpu-memory-fraction",
                 "0.35",
-                "--stages.4.runtime.sglang-server-args.mem-fraction-static",
+                "--stages.3.runtime.sglang-server-args.mem-fraction-static",
             ]
         )
 
@@ -134,7 +134,6 @@ def test_qwen3_omni_h20_colocated_example_config_loads_and_plans() -> None:
         "preprocessing",
         "image_encoder",
         "audio_encoder",
-        "mm_aggregate",
         "thinker",
         "decode",
         "talker_ar",
@@ -225,8 +224,7 @@ def test_h20_colocated_example_reserve_keeps_raw_budget_in_resolved_config() -> 
 
 def test_config_manager_rejects_unknown_stage_override(tmp_path: Path) -> None:
     config_path = tmp_path / "bad_colocated.yaml"
-    config_path.write_text(
-        """
+    config_path.write_text("""
 config_cls: Qwen3OmniSpeechColocatedPipelineConfig
 model_path: dummy
 stage_overrides:
@@ -234,8 +232,7 @@ stage_overrides:
     runtime:
       resources:
         total_gpu_memory_fraction: 0.05
-"""
-    )
+""")
 
     with pytest.raises(ValueError, match="unknown stage"):
         ConfigManager.from_file(str(config_path))
@@ -245,15 +242,13 @@ def test_config_manager_rejects_unsupported_stage_override_key(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "bad_colocated.yaml"
-    config_path.write_text(
-        """
+    config_path.write_text("""
 config_cls: Qwen3OmniSpeechColocatedPipelineConfig
 model_path: dummy
 stage_overrides:
   thinker:
     gpu: 0
-"""
-    )
+""")
 
     with pytest.raises(ValueError, match="supports only runtime"):
         ConfigManager.from_file(str(config_path))
@@ -263,13 +258,11 @@ def test_config_manager_rejects_non_mapping_stage_overrides(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "bad_colocated.yaml"
-    config_path.write_text(
-        """
+    config_path.write_text("""
 config_cls: Qwen3OmniSpeechColocatedPipelineConfig
 model_path: dummy
 stage_overrides:
-"""
-    )
+""")
 
     with pytest.raises(ValueError, match="stage_overrides must be a mapping"):
         ConfigManager.from_file(str(config_path))
@@ -279,8 +272,7 @@ def test_config_manager_validates_stage_override_runtime_values(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "bad_colocated.yaml"
-    config_path.write_text(
-        """
+    config_path.write_text("""
 config_cls: Qwen3OmniSpeechColocatedPipelineConfig
 model_path: dummy
 stage_overrides:
@@ -288,8 +280,7 @@ stage_overrides:
     runtime:
       resources:
         total_gpu_memory_fraction: 1.5
-"""
-    )
+""")
 
     with pytest.raises(ValueError, match="total_gpu_memory_fraction"):
         ConfigManager.from_file(str(config_path))
