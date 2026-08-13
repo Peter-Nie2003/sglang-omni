@@ -222,7 +222,7 @@ def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing() -> None
         control_plane = _FakeControlPlane()
         relay = _FakeRelay()
         scheduler = SimpleNamespace(outbox=queue.Queue())
-        codes = torch.empty(11, 1, dtype=torch.long)
+        codes = torch.empty(4096, 1, dtype=torch.long)
         stage = Stage(
             name="tts_engine",
             role="single",
@@ -257,6 +257,113 @@ def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing() -> None
         assert msg.to_stage == "vocoder"
         assert msg.chunk_id == 0
         assert DataRef.from_dict(msg.data_ref).metadata == {"modality": "audio_codes"}
+
+    asyncio.run(_run())
+
+
+def test_small_cpu_scheduler_stream_chunk_rides_inline() -> None:
+    async def _run() -> None:
+        control_plane = _FakeControlPlane()
+        relay = _FakeRelay()
+        scheduler = SimpleNamespace(outbox=queue.Queue())
+        token = torch.tensor([42], dtype=torch.long)
+        stage = Stage(
+            name="thinker",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={"decode": "inproc://decode"},
+            control_plane=control_plane,
+            relay=relay,
+            scheduler=scheduler,
+        )
+        stage._active_requests.add("req")
+        scheduler.outbox.put(
+            OutgoingMessage(
+                request_id="req",
+                type="stream",
+                data=token,
+                target="decode",
+                metadata={"token_id": 42},
+            )
+        )
+
+        await stage._drain_outbox_external()
+
+        assert relay.puts == []
+        assert len(control_plane.stage_messages) == 1
+        target, endpoint, msg = control_plane.stage_messages[0]
+        assert target == "decode"
+        assert endpoint == "inproc://decode"
+        assert msg.chunk_id == 0
+        assert stage_io.is_inline_stream_chunk_ref(msg.data_ref)
+        data, metadata = stage_io.deserialize_inline_stream_chunk(msg.data_ref)
+        assert torch.equal(data, token)
+        assert metadata == {"token_id": 42}
+
+    asyncio.run(_run())
+
+
+def test_inline_stream_chunk_gate() -> None:
+    small = torch.zeros(8, dtype=torch.long)
+    assert stage_io.should_use_inline_stream_chunk(small, {"token_id": 1})
+    assert stage_io.should_use_inline_stream_chunk(small, None)
+    big = torch.zeros(
+        stage_io._INLINE_STREAM_CHUNK_BYTES_LIMIT + 1, dtype=torch.uint8
+    )
+    assert not stage_io.should_use_inline_stream_chunk(big, None)
+    assert not stage_io.should_use_inline_stream_chunk(
+        small, {"extra": torch.zeros(2)}
+    )
+    assert not stage_io.should_use_inline_stream_chunk("not-a-tensor", None)
+
+
+def test_stage_routes_inline_stream_chunk_to_scheduler() -> None:
+    async def _run() -> None:
+        control_plane = _FakeControlPlane()
+        relay = ShmRelay(engine_id="t-inline", device="cpu")
+        scheduler = SimpleNamespace(
+            outbox=queue.Queue(),
+            inbox=queue.Queue(),
+            abort=lambda request_id: None,
+        )
+        stage = Stage(
+            name="decode",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={
+                "thinker": "inproc://thinker",
+                "tts_engine": "inproc://tts_engine",
+            },
+            control_plane=control_plane,
+            relay=relay,
+            scheduler=scheduler,
+        )
+        stage._stream_queue = StreamQueue(max_pending=4096)
+        payload = StagePayload(
+            request_id="req",
+            request=OmniRequest(inputs="hello"),
+            data={"ready": True},
+        )
+        await stage._on_data_ready(await _make_relay_payload(relay, payload))
+        token = torch.tensor([7], dtype=torch.long)
+        msg = DataReadyMessage(
+            request_id="req",
+            from_stage="thinker",
+            to_stage="decode",
+            data_ref=stage_io.serialize_inline_stream_chunk(token, {"token_id": 7}),
+            chunk_id=0,
+        )
+
+        await stage._on_stream_chunk(msg)
+
+        payload_msg = scheduler.inbox.get_nowait()
+        chunk_msg = scheduler.inbox.get_nowait()
+        assert payload_msg.type == "new_request"
+        assert chunk_msg.type == "stream_chunk"
+        assert torch.equal(chunk_msg.data.data, token)
+        assert chunk_msg.data.metadata == {"token_id": 7}
 
     asyncio.run(_run())
 

@@ -247,6 +247,58 @@ def serialize_direct_cuda_ipc_stream_chunk(
     return ref
 
 
+_INLINE_STREAM_CHUNK_TYPE = "InlineStreamChunk"
+_INLINE_STREAM_CHUNK_BYTES_LIMIT = 16 * 1024
+
+
+def should_use_inline_stream_chunk(data: Any, metadata: dict[str, Any] | None) -> bool:
+    if not isinstance(data, torch.Tensor) or data.is_cuda:
+        return False
+    if _contains_cuda_tensor(metadata) or _contains_cpu_tensor(metadata):
+        return False
+    return data.element_size() * data.numel() <= _INLINE_STREAM_CHUNK_BYTES_LIMIT
+
+
+def serialize_inline_stream_chunk(
+    data: torch.Tensor, metadata: dict[str, Any] | None
+) -> dict[str, Any]:
+    if not should_use_inline_stream_chunk(data, metadata):
+        raise ValueError("stream chunk is not inline eligible")
+    return {
+        "_type": _INLINE_STREAM_CHUNK_TYPE,
+        "version": 1,
+        "payload": pickle.dumps((data, metadata)),
+    }
+
+
+def is_inline_stream_chunk_ref(value: Any) -> bool:
+    return isinstance(value, dict) and value.get("_type") == _INLINE_STREAM_CHUNK_TYPE
+
+
+def deserialize_inline_stream_chunk(
+    data_ref: dict[str, Any],
+) -> tuple[torch.Tensor, dict[str, Any] | None]:
+    if data_ref.get("_type") != _INLINE_STREAM_CHUNK_TYPE:
+        raise ValueError("data_ref is not an inline stream chunk")
+    if data_ref.get("version") != 1:
+        raise ValueError(
+            f"unsupported inline stream chunk version {data_ref.get('version')!r}"
+        )
+    payload = data_ref.get("payload")
+    if not isinstance(payload, bytes):
+        raise TypeError(
+            f"inline stream chunk payload must be bytes, got "
+            f"{type(payload).__name__}"
+        )
+    data, metadata = pickle.loads(payload)
+    if not isinstance(data, torch.Tensor):
+        raise TypeError(
+            f"inline stream chunk data must be torch.Tensor, got "
+            f"{type(data).__name__}"
+        )
+    return data, metadata
+
+
 def is_direct_cuda_ipc_stream_chunk_ref(value: Any) -> bool:
     return (
         isinstance(value, dict)
