@@ -56,9 +56,31 @@ wait_gpu_idle() {
   return 1
 }
 
+# sglang_omni 可能被 pip install -e 装到别的 clone；worktree 必须排在它前面，
+# 否则两个分支会加载同一份代码，A/B 静默失效。
+assert_imports_from_worktree() {
+  local wt=$1 name origin
+  for name in sglang_omni benchmarks; do
+    # benchmarks 是 namespace package，origin 为 None，退回搜索路径
+    origin=$( cd "$wt" && PYTHONPATH="$wt" python -c \
+      "import importlib.util as u
+s = u.find_spec('$name')
+if not s: print('MISSING')
+elif s.origin: print(s.origin)
+else: print(next(iter(s.submodule_search_locations), 'MISSING'))" 2>/dev/null )
+    case "$origin" in
+      "$wt"/*) ;;
+      *) log "!!! $wt: '$name' 解析到 $origin，不在该 worktree 内 —— 中止"; exit 1 ;;
+    esac
+  done
+  log "    $wt: sglang_omni / benchmarks 均来自本 worktree ✓"
+}
+
 preflight() {
   command -v nvidia-smi >/dev/null || { log "找不到 nvidia-smi"; exit 1; }
   [[ -d "$BASE_WT" && -d "$PR_WT" ]] || { log "worktree 不存在: $BASE_WT / $PR_WT"; exit 1; }
+  assert_imports_from_worktree "$BASE_WT"
+  assert_imports_from_worktree "$PR_WT"
   log "GPU $GPU_THINKER (thinker) <-> GPU $GPU_TALKER (talker) 互联方式："
   nvidia-smi topo -m 2>/dev/null | grep -E "^\s+GPU0|^GPU${GPU_THINKER}\b"
   local used; used=$(gpu_used_mib)
@@ -72,7 +94,7 @@ preflight() {
 start_server() {
   local wt=$1 logfile=$2
   log ">>> 启动 server: $wt"
-  ( cd "$wt" && exec python examples/run_qwen3_omni_speech_server.py \
+  ( cd "$wt" && PYTHONPATH="$wt" exec python examples/run_qwen3_omni_speech_server.py \
       --port "$PORT" "${SERVER_ARGS[@]}" ) >"$logfile" 2>&1 &
   SERVER_PID=$!
 }
@@ -103,11 +125,18 @@ run_cell() {
     out="$OUT_ROOT/c${conc}/${branch}/${tag}"
     mkdir -p "$out"
     log ">>> [$branch] c=$conc N=$n $tag"
-    ( cd "$wt" && python benchmarks/eval/benchmark_omni_seedtts.py --port "$PORT" \
+    ( cd "$wt" && PYTHONPATH="$wt" python -m benchmarks.eval.benchmark_omni_seedtts \
+        --port "$PORT" \
         --lang en --voice-clone --stream --generate-only \
         --max-new-tokens "$MAX_NEW_TOKENS" --temperature 0 \
         --warmup 2 --max-samples "$n" --max-concurrency "$conc" \
         --disable-tqdm --output-dir "$out" ) 2>&1 | tee "$out/bench.log"
+
+    if [[ ! -f "$out/speed_results.json" ]]; then
+      log "!!! $tag 没产出 speed_results.json，见 $out/bench.log —— 中止"
+      stop_server
+      exit 1
+    fi
   done
 
   stop_server
