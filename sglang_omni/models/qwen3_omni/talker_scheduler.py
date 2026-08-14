@@ -29,6 +29,7 @@ def configure_talker_server_args(
     overrides = {
         "disable_radix_cache": True,
         "chunked_prefill_size": 0,
+        "enable_mixed_chunk": True,
     }
     if feedback_enabled:
         overrides["disable_overlap_schedule"] = True
