@@ -58,6 +58,7 @@ class Coordinator:
         terminal_stages_resolver: (
             Callable[[OmniRequest], list[str] | None] | None
         ) = None,
+        admission_min_gap_ms: float = 0.0,
     ):
         """Initialize coordinator.
 
@@ -67,6 +68,9 @@ class Coordinator:
             entry_stage: Name of the entry stage for new requests
             terminal_stages: Terminal stage names. When multiple are given,
                 the coordinator waits for all to complete before resolving.
+            admission_min_gap_ms: Minimum gap between request admissions in
+                milliseconds. Staggers simultaneous arrivals so their prefills
+                do not form one wave. 0 disables the gate.
         """
         self.entry_stage = entry_stage
         self._terminal_stages: set[str] = (
@@ -95,6 +99,9 @@ class Coordinator:
         self._abort_tasks: dict[str, asyncio.Task[bool]] = {}
         self._admin_ops: dict[str, _AdminPendingOperation] = {}
         self._admin_lock = asyncio.Lock()
+
+        self._admission_min_gap_s = admission_min_gap_ms / 1000.0
+        self._next_admission_at = 0.0
 
         # State
         self._running = False
@@ -367,6 +374,15 @@ class Coordinator:
                         self._stream_queues.pop(request_id, None)
                         self._completion_futures.pop(request_id, None)
 
+    async def _wait_for_admission_slot(self) -> None:
+        if self._admission_min_gap_s <= 0:
+            return
+        now = asyncio.get_running_loop().time()
+        slot = max(now, self._next_admission_at)
+        self._next_admission_at = slot + self._admission_min_gap_s
+        if slot > now:
+            await asyncio.sleep(slot - now)
+
     async def _submit_request(
         self,
         request_id: str,
@@ -375,6 +391,7 @@ class Coordinator:
         stream_queue: asyncio.Queue[CompleteMessage | StreamMessage] | None = None,
     ) -> None:
         """Submit a request without waiting for completion."""
+        await self._wait_for_admission_slot()
         if self._fatal_error is not None:
             raise RuntimeError(self._fatal_error)
         if self._request_id_is_reserved(request_id):

@@ -458,6 +458,7 @@ class MultiProcessPipelineRunner:
                 entry_stage=prep.entry_stage,
                 terminal_stages=self._config.terminal_stages or None,
                 terminal_stages_resolver=terminal_stages_resolver,
+                admission_min_gap_ms=self._config.admission_min_gap_ms,
             )
             await self._coordinator.start()
             self._completion_task = asyncio.create_task(
