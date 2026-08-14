@@ -11,6 +11,7 @@ BASE_WT="${BASE_WT:-$HOME/bench/wt-base}"
 PR_WT="${PR_WT:-$HOME/bench/wt-pr}"
 OUT_ROOT="${OUT_ROOT:-$HOME/bench/results/$(date +%Y%m%d-%H%M%S)}"
 PORT="${PORT:-8000}"
+PY="${PY:-python3}"
 
 GPU_THINKER="${GPU_THINKER:-0}"   # thinker + image_encoder + audio_encoder
 GPU_TALKER="${GPU_TALKER:-1}"     # talker_ar + code2wav
@@ -62,7 +63,7 @@ assert_imports_from_worktree() {
   local wt=$1 name origin
   for name in sglang_omni benchmarks; do
     # benchmarks 是 namespace package，origin 为 None，退回搜索路径
-    origin=$( cd "$wt" && PYTHONPATH="$wt" python -c \
+    origin=$( cd "$wt" && PYTHONPATH="$wt" "$PY" -c \
       "import importlib.util as u
 s = u.find_spec('$name')
 if not s: print('MISSING')
@@ -94,7 +95,7 @@ preflight() {
 start_server() {
   local wt=$1 logfile=$2
   log ">>> 启动 server: $wt"
-  ( cd "$wt" && PYTHONPATH="$wt" exec python examples/run_qwen3_omni_speech_server.py \
+  ( cd "$wt" && PYTHONPATH="$wt" exec "$PY" examples/run_qwen3_omni_speech_server.py \
       --port "$PORT" "${SERVER_ARGS[@]}" ) >"$logfile" 2>&1 &
   SERVER_PID=$!
 }
@@ -125,7 +126,7 @@ run_cell() {
     out="$OUT_ROOT/c${conc}/${branch}/${tag}"
     mkdir -p "$out"
     log ">>> [$branch] c=$conc N=$n $tag"
-    ( cd "$wt" && PYTHONPATH="$wt" python -m benchmarks.eval.benchmark_omni_seedtts \
+    ( cd "$wt" && PYTHONPATH="$wt" "$PY" -m benchmarks.eval.benchmark_omni_seedtts \
         --port "$PORT" \
         --lang en --voice-clone --stream --generate-only \
         --max-new-tokens "$MAX_NEW_TOKENS" --temperature 0 \
