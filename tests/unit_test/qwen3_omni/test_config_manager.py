@@ -255,7 +255,7 @@ stage_overrides:
 """
     )
 
-    with pytest.raises(ValueError, match="supports only runtime"):
+    with pytest.raises(ValueError, match="unsupported keys"):
         ConfigManager.from_file(str(config_path))
 
 
