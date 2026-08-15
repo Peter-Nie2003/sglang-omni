@@ -167,4 +167,4 @@ for conc in "${CONCURRENCIES[@]}"; do
 done
 
 [[ -n "$SAMPLER_PID" ]] && kill "$SAMPLER_PID" 2>/dev/null
-log "全部完成，汇总： python3 benchmarks/ab/aggregate.py $OUT_ROOT"
+log "全部完成，汇总： ${PY:-python3} $(cd "$(dirname "$0")" && pwd)/aggregate.py $OUT_ROOT"

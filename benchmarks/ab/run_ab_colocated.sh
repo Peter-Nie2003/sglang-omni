@@ -28,9 +28,13 @@ FORCE_GPU_CLEANUP="${FORCE_GPU_CLEANUP:-0}"
 
 export CUDA_VISIBLE_DEVICES="$GPU"
 
-ARM_NAMES=(base mixed inter)
-ARM_WT=("$BASE_WT" "$TIP_WT" "$TIP_WT")
-ARM_EXTRA=("" "" "--talker-prefill-decode-interleave on")
+# 臂的定义来自 profile；ARM_ENV 里是每臂额外的环境变量（KEY=VAL，空格分隔）
+ARMS_FILE="${ARMS_FILE:-$(cd "$(dirname "$0")" && pwd)/arms/talker_interleave.sh}"
+[[ -f "$ARMS_FILE" ]] || { echo "找不到臂定义: $ARMS_FILE" >&2; exit 1; }
+ARM_ENV=()
+# shellcheck source=/dev/null
+source "$ARMS_FILE"
+(( ${#ARM_ENV[@]} )) || ARM_ENV=("${ARM_NAMES[@]/*/}")
 
 SERVER_LOG_DIR="$OUT_ROOT/server-logs"
 mkdir -p "$SERVER_LOG_DIR"
@@ -97,10 +101,9 @@ preflight() {
   for wt in "$BASE_WT" "$TIP_WT"; do
     [[ -f "$wt/$COLOCATED_CONFIG" ]] || { log "!!! $wt/$COLOCATED_CONFIG 不存在"; exit 1; }
   done
-  # inter 臂依赖 tip 上新增的 CLI flag；base 上没有，只有 tip 需要有
-  if ! grep -q "talker-prefill-decode-interleave" "$TIP_WT/sglang_omni/cli/serve.py"; then
-    log "!!! $TIP_WT 的 serve.py 没有 --talker-prefill-decode-interleave，inter 臂无法测"
-    exit 1
+  # profile 可声明 arms_preflight 来验证它依赖的 flag / 环境变量真的存在
+  if declare -F arms_preflight >/dev/null; then
+    arms_preflight || exit 1
   fi
   log "同机其他 GPU 占用（非空即有别的租户）："
   nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader \
@@ -113,9 +116,9 @@ preflight() {
 }
 
 start_server() {
-  local wt=$1 extra=$2 logfile=$3
-  log ">>> 启动 colocated server: $wt ${extra:-（默认参数）}"
-  ( cd "$wt" && PYTHONPATH="$wt" exec "$PY" -m sglang_omni.cli serve \
+  local wt=$1 extra=$2 envs=$3 logfile=$4
+  log ">>> 启动 colocated server: $wt ${extra:-（默认参数）} ${envs:+[$envs]}"
+  ( cd "$wt" && PYTHONPATH="$wt" exec env $envs "$PY" -m sglang_omni.cli serve \
       --config "$wt/$COLOCATED_CONFIG" --colocate --port "$PORT" \
       $extra ) >"$logfile" 2>&1 &
   SERVER_PID=$!
@@ -136,11 +139,11 @@ cleanup() { [[ -n "$SAMPLER_PID" ]] && kill "$SAMPLER_PID" 2>/dev/null; stop_ser
 trap 'cleanup; exit 130' INT TERM
 
 run_cell() {
-  local arm=$1 wt=$2 extra=$3 conc=$4
+  local arm=$1 wt=$2 extra=$3 envs=$4 conc=$5
   local n=$(( SAMPLES_PER_CONC * conc ))
   (( n < 32 )) && n=32
 
-  start_server "$wt" "$extra" "$SERVER_LOG_DIR/${arm}-c${conc}.log"
+  start_server "$wt" "$extra" "$envs" "$SERVER_LOG_DIR/${arm}-c${conc}.log"
 
   local total=$(( DISCARD + REPEATS )) i tag out
   for (( i=1; i<=total; i++ )); do
@@ -170,9 +173,10 @@ start_gpu_sampler
 log "输出目录: $OUT_ROOT"
 for conc in "${CONCURRENCIES[@]}"; do
   for idx in "${!ARM_NAMES[@]}"; do
-    run_cell "${ARM_NAMES[$idx]}" "${ARM_WT[$idx]}" "${ARM_EXTRA[$idx]}" "$conc"
+    run_cell "${ARM_NAMES[$idx]}" "${ARM_WT[$idx]}" "${ARM_EXTRA[$idx]}" \
+      "${ARM_ENV[$idx]}" "$conc"
   done
 done
 
 [[ -n "$SAMPLER_PID" ]] && kill "$SAMPLER_PID" 2>/dev/null
-log "全部完成，汇总： $PY benchmarks/ab/aggregate.py $OUT_ROOT"
+log "全部完成，汇总： $PY $(cd "$(dirname "$0")" && pwd)/aggregate.py $OUT_ROOT"

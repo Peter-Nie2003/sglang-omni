@@ -33,7 +33,7 @@ VALIDITY = [
 
 REFERENCE_ARM = "base"
 # 已知臂按递进关系排；其余臂按字母序接在后面
-ARM_ORDER = ["base", "pr", "mixed", "inter"]
+ARM_ORDER = ["base", "pr", "mixed", "inter", "wait50", "wait10", "wait0"]
 
 
 def load_runs(cell: Path) -> tuple[list[dict], list[str]]:
