@@ -79,7 +79,7 @@ stages = [
 | `route_fn` | `str` or `None` | `None` | Dotted function path for request-aware result routing. The function receives `(request_id, stage_output)` and returns a downstream stage name or list of stage names. |
 | `gpu` | `int`, `list[int]`, or `None` | `None` | GPU id for the stage. `None` means CPU placement. A list is used for tensor parallel ranks. |
 | `tp_size` | `int` | `1` | Number of tensor-parallel ranks. Must match `len(gpu)` when `gpu` is a list. |
-| `process` | `str` or `None` | `None` | OS process group identifier. Non-TP stages with the same `process` value share a single OS process; today every non-TP stage must declare one explicitly (see also `_validate_general`). For TP stages, `process` is optional and acts as a prefix for the derived rank-process names (`{process}_tp{rank}`); if unset, the stage name is used as the prefix. |
+| `process` | `str` or `None` | `None` | OS process group identifier. Non-TP stages with the same `process` value share a single OS process; today every non-TP stage must declare one explicitly (see also `_validate_general`). For TP stages, `process` is optional, must not be shared with another stage, and acts as a prefix for the derived rank-process names (`{process}_tp{rank}`); if unset, the stage name is used as the prefix. |
 | `wait_for` | `list[str]` or `None` | `None` | Upstream stages required before this stage can execute a request. |
 | `wait_for_fn` | `str` or `None` | `None` | Dotted function path for request-aware fan-in source selection. The function receives `(request_id, from_stage, payload)` and returns the active subset of `wait_for`, or `None` when the payload does not determine the subset yet. |
 | `merge_fn` | `str` or `None` | `None` | Dotted import path to the fan-in merge function. Required when `wait_for` is set. |
@@ -262,11 +262,11 @@ StageConfig(
 For `tp_size > 1`, the runner derives one process per TP rank. Each process runs
 the stage scheduler and model worker with a different `tp_rank` and GPU. NCCL
 collectives inside model forward keep TP ranks in lockstep. `StageConfig.process`
-is optional for TP stages; if set, it acts as the prefix for the derived
-per-rank process names (`{process}_tp{rank}`); if unset, the stage name is used
-as the prefix. TP ranks always own their OS process exclusively — a TP stage's
-process group cannot host any other stage, regardless of whether `process` is
-set or unset.
+is optional for TP stages; if set, it names the logical TP process and acts as
+the prefix for the derived per-rank process names (`{process}_tp{rank}`); if
+unset, the stage name is used for both. TP ranks always own their OS process
+exclusively — a TP stage's process group cannot host any other stage, regardless
+of whether `process` is set or unset.
 
 Only rank 0 owns external stage IO:
 
