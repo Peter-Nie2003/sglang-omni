@@ -25,6 +25,7 @@ SAMPLES_PER_CONC="${SAMPLES_PER_CONC:-8}"
 MAX_NEW_TOKENS=256
 IDLE_MIB=2000
 FORCE_GPU_CLEANUP="${FORCE_GPU_CLEANUP:-0}"
+ROTATE_ARMS="${ROTATE_ARMS:-0}"
 
 export CUDA_VISIBLE_DEVICES="$GPU"
 
@@ -95,12 +96,13 @@ start_gpu_sampler() {
 
 preflight() {
   command -v nvidia-smi >/dev/null || { log "找不到 nvidia-smi"; exit 1; }
-  [[ -d "$BASE_WT" && -d "$TIP_WT" ]] || { log "worktree 不存在: $BASE_WT / $TIP_WT"; exit 1; }
-  assert_imports_from_worktree "$BASE_WT"
-  assert_imports_from_worktree "$TIP_WT"
-  for wt in "$BASE_WT" "$TIP_WT"; do
+  # 校验臂实际用到的每个 worktree，而不只是 BASE_WT/TIP_WT
+  local wt
+  while IFS= read -r wt; do
+    [[ -d "$wt" ]] || { log "worktree 不存在: $wt"; exit 1; }
     [[ -f "$wt/$COLOCATED_CONFIG" ]] || { log "!!! $wt/$COLOCATED_CONFIG 不存在"; exit 1; }
-  done
+    assert_imports_from_worktree "$wt"
+  done < <(printf '%s\n' "${ARM_WT[@]}" | sort -u)
   # profile 可声明 arms_preflight 来验证它依赖的 flag / 环境变量真的存在
   if declare -F arms_preflight >/dev/null; then
     arms_preflight || exit 1
@@ -171,11 +173,16 @@ run_cell() {
 preflight
 start_gpu_sampler
 log "输出目录: $OUT_ROOT"
+n_arms=${#ARM_NAMES[@]}
+ci=0
 for conc in "${CONCURRENCIES[@]}"; do
-  for idx in "${!ARM_NAMES[@]}"; do
+  # ROTATE_ARMS=1 时每个并发换一个起始臂，避免某条臂固定占着"并发切换后第一格"
+  for (( k=0; k<n_arms; k++ )); do
+    if [[ "$ROTATE_ARMS" == "1" ]]; then idx=$(( (k + ci) % n_arms )); else idx=$k; fi
     run_cell "${ARM_NAMES[$idx]}" "${ARM_WT[$idx]}" "${ARM_EXTRA[$idx]}" \
       "${ARM_ENV[$idx]}" "$conc"
   done
+  ci=$(( ci + 1 ))
 done
 
 [[ -n "$SAMPLER_PID" ]] && kill "$SAMPLER_PID" 2>/dev/null
