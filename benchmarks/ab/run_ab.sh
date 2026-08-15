@@ -32,6 +32,7 @@ SERVER_ARGS=(--gpu-thinker 0 --gpu-talker 1)
 SERVER_LOG_DIR="$OUT_ROOT/server-logs"
 mkdir -p "$SERVER_LOG_DIR"
 SERVER_PID=""
+SAMPLER_PID=""
 
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 
@@ -114,7 +115,18 @@ stop_server() {
   wait_gpu_idle 300 || log "!!! 继续，但下一格结果可能受污染"
 }
 
-trap 'stop_server; exit 130' INT TERM
+# 全程记录未预留 GPU 的负载：噪声若来自同机其他租户，事后能对上时间段
+start_gpu_sampler() {
+  ( while :; do
+      echo "$(date +%H:%M:%S) $(nvidia-smi --query-gpu=index,utilization.gpu,memory.used \
+        --format=csv,noheader | tr '\n' ';')"
+      sleep 10
+    done ) > "$OUT_ROOT/gpu-sample.log" 2>&1 &
+  SAMPLER_PID=$!
+}
+
+cleanup() { [[ -n "$SAMPLER_PID" ]] && kill "$SAMPLER_PID" 2>/dev/null; stop_server; }
+trap 'cleanup; exit 130' INT TERM
 
 run_cell() {
   local branch=$1 wt=$2 conc=$3
@@ -147,10 +159,12 @@ run_cell() {
 }
 
 preflight
+start_gpu_sampler
 log "输出目录: $OUT_ROOT"
 for conc in "${CONCURRENCIES[@]}"; do
   run_cell base "$BASE_WT" "$conc"
   run_cell pr   "$PR_WT"   "$conc"
 done
 
+[[ -n "$SAMPLER_PID" ]] && kill "$SAMPLER_PID" 2>/dev/null
 log "全部完成，汇总： python3 benchmarks/ab/aggregate.py $OUT_ROOT"

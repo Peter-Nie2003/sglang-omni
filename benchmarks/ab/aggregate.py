@@ -83,8 +83,11 @@ def main() -> None:
 
         print(f"\n### concurrency = {conc_dir.name[1:]}")
         n_rounds = min(len(runs["base"]), len(runs["pr"]))
-        print(f"| 指标 | baseline | PR | Δ | {n_rounds} 轮极差(base/pr) | 可判读 |")
-        print("|---|---|---|---|---|---|")
+        print(
+            f"| 指标 | baseline | PR | Δ | {n_rounds} 轮极差(base/pr) | "
+            f"取值区间 base / pr | 可判读 |"
+        )
+        print("|---|---|---|---|---|---|---|")
 
         for key, label, direction in METRICS:
             bs, ps = series(runs["base"], key), series(runs["pr"], key)
@@ -98,20 +101,22 @@ def main() -> None:
             mark = "✅" if abs(delta) >= 1 and good else ("🔴" if abs(delta) >= 1 else "·")
 
             sb, sp = spread_pct(bs), spread_pct(ps)
-            if sb is None or sp is None:
-                spread_txt, verdict = "-", "?"
+            spread_txt = "-" if sb is None or sp is None else f"{sb:.1f}%/{sp:.1f}%"
+            # 两分支的轮次取值区间完全不重叠才算测得出来；比“Δ 超过极差”稳健，
+            # 单个离群轮只会撑大区间，不会伪造分离。
+            if len(bs) < 2 or len(ps) < 2:
+                verdict = "?"
+            elif max(bs) < min(ps) or max(ps) < min(bs):
+                verdict = "是"
+                resolvable += 1
             else:
-                spread_txt = f"{sb:.1f}%/{sp:.1f}%"
-                # Δ 必须超过两侧各自的轮间波动，否则读到的是噪声
-                if abs(delta) > max(sb, sp):
-                    verdict = "是"
-                    resolvable += 1
-                else:
-                    verdict = "**否**"
-                    unresolved += 1
+                verdict = "**否**"
+                unresolved += 1
             print(
                 f"| {label} | {base_v:.4g} | {pr_v:.4g} | "
-                f"{delta:+.2f}% {mark} | {spread_txt} | {verdict} |"
+                f"{delta:+.2f}% {mark} | {spread_txt} | "
+                f"[{min(bs):.3g},{max(bs):.3g}] / [{min(ps):.3g},{max(ps):.3g}] | "
+                f"{verdict} |"
             )
 
         print(f"\n有效性校验（两分支应当一致，不一致则对比不成立）：")
@@ -131,8 +136,8 @@ def main() -> None:
     total = resolvable + unresolved
     if total:
         print(f"\n### 判读\n")
-        print(f"{total} 项对比中 **{resolvable} 项** 的 Δ 超过了轮间波动，可以采信；")
-        print(f"其余 {unresolved} 项落在噪声里，不支持任何方向的结论。")
+        print(f"{total} 项对比中 **{resolvable} 项** 两分支取值区间完全分离，可以采信；")
+        print(f"其余 {unresolved} 项区间重叠，不支持任何方向的结论。")
 
     if all_warnings:
         print("\n### 告警")
