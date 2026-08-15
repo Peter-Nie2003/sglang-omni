@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""汇总 run_ab.sh 的结果：每格多轮取中位数，输出 baseline vs PR 对比表。"""
+"""汇总 A/B 结果：每格多轮取中位数，各臂与 base 对比。
+
+臂名从目录结构推断，所以两臂（base/pr）和三臂（base/mixed/inter）通用。
+"""
 
 from __future__ import annotations
 
@@ -27,13 +30,18 @@ VALIDITY = [
     ("output_tokens_mean", "输出 token 均值"),
     ("audio_duration_mean_s", "音频时长均值 (s)"),
 ]
-BRANCHES = ["base", "pr"]
+
+REFERENCE_ARM = "base"
+# 已知臂按递进关系排；其余臂按字母序接在后面
+ARM_ORDER = ["base", "pr", "mixed", "inter"]
 
 
 def load_runs(cell: Path) -> tuple[list[dict], list[str]]:
     """读该格所有计入统计的轮次（run*/，discard*/ 忽略）。"""
     summaries: list[dict] = []
     warnings: list[str] = []
+    if not cell.is_dir():
+        return [], []
     runs = sorted(cell.glob("run*"))
     if not runs:
         return [], [f"{cell}: 没有 run* 目录"]
@@ -63,6 +71,78 @@ def spread_pct(values: list[float]) -> float | None:
     return (max(values) - min(values)) / mean * 100 if mean else None
 
 
+def emit_comparison(
+    ref_runs: list[dict],
+    arm_runs: list[dict],
+    ref_name: str,
+    arm_name: str,
+) -> tuple[int, int]:
+    """打印一臂对参照臂的对比表，返回 (可判读数, 不可判读数)。"""
+    resolvable = unresolved = 0
+    n_rounds = min(len(ref_runs), len(arm_runs))
+    print(f"\n**{arm_name} vs {ref_name}**\n")
+    print(
+        f"| 指标 | {ref_name} | {arm_name} | Δ | {n_rounds} 轮极差 | "
+        f"取值区间 {ref_name} / {arm_name} | 可判读 |"
+    )
+    print("|---|---|---|---|---|---|---|")
+
+    for key, label, direction in METRICS:
+        rs, as_ = series(ref_runs, key), series(arm_runs, key)
+        if not rs or not as_:
+            continue
+        ref_v, arm_v = statistics.median(rs), statistics.median(as_)
+        if not ref_v:
+            continue
+        delta = (arm_v - ref_v) / ref_v * 100
+        good = (delta > 0) if direction == "higher" else (delta < 0)
+        mark = "✅" if abs(delta) >= 1 and good else ("🔴" if abs(delta) >= 1 else "·")
+
+        sr, sa = spread_pct(rs), spread_pct(as_)
+        spread_txt = "-" if sr is None or sa is None else f"{sr:.1f}%/{sa:.1f}%"
+        # 区间完全不重叠才算测得出来；单个离群轮只会撑大区间，不会伪造分离。
+        if len(rs) < 2 or len(as_) < 2:
+            verdict = "?"
+        elif max(rs) < min(as_) or max(as_) < min(rs):
+            verdict = "是"
+            resolvable += 1
+        else:
+            verdict = "**否**"
+            unresolved += 1
+        print(
+            f"| {label} | {ref_v:.4g} | {arm_v:.4g} | {delta:+.2f}% {mark} | "
+            f"{spread_txt} | [{min(rs):.3g},{max(rs):.3g}] / "
+            f"[{min(as_):.3g},{max(as_):.3g}] | {verdict} |"
+        )
+    return resolvable, unresolved
+
+
+def emit_validity(runs: dict[str, list[dict]], arms: list[str]) -> None:
+    print("\n有效性校验（各臂应当一致，不一致则对比不成立）：\n")
+    print("| 项 | " + " | ".join(arms) + " |")
+    print("|---" * (len(arms) + 1) + "|")
+    for key, label in VALIDITY:
+        values = {}
+        for arm in arms:
+            vs = series(runs[arm], key)
+            if vs:
+                values[arm] = statistics.median(vs)
+        if len(values) < len(arms):
+            continue
+        ref = values[arms[0]]
+        cells = []
+        for arm in arms:
+            cell = f"{values[arm]:.4g}"
+            if (
+                key in ("output_tokens_mean", "audio_duration_mean_s")
+                and ref
+                and abs(values[arm] - ref) / ref > 0.05
+            ):
+                cell += " ⚠️"
+            cells.append(cell)
+        print(f"| {label} | " + " | ".join(cells) + " |")
+
+
 def main() -> None:
     root = Path(sys.argv[1]).expanduser()
     conc_dirs = sorted(
@@ -73,70 +153,40 @@ def main() -> None:
     resolvable = unresolved = 0
 
     for conc_dir in conc_dirs:
-        runs = {}
-        for branch in BRANCHES:
-            summaries, warns = load_runs(conc_dir / branch)
-            runs[branch] = summaries
+        found = sorted(p.name for p in conc_dir.iterdir() if p.is_dir())
+        if REFERENCE_ARM not in found:
+            all_warnings.append(f"{conc_dir}: 没有 {REFERENCE_ARM!r} 臂，跳过")
+            continue
+        others = sorted(
+            (a for a in found if a != REFERENCE_ARM),
+            key=lambda a: (
+                ARM_ORDER.index(a) if a in ARM_ORDER else len(ARM_ORDER),
+                a,
+            ),
+        )
+        arms = [REFERENCE_ARM] + others
+
+        runs: dict[str, list[dict]] = {}
+        for arm in arms:
+            summaries, warns = load_runs(conc_dir / arm)
+            runs[arm] = summaries
             all_warnings.extend(warns)
-        if not runs["base"] or not runs["pr"]:
+
+        compare = [a for a in arms[1:] if runs[a]]
+        if not runs[REFERENCE_ARM] or not compare:
             continue
 
         print(f"\n### concurrency = {conc_dir.name[1:]}")
-        n_rounds = min(len(runs["base"]), len(runs["pr"]))
-        print(
-            f"| 指标 | baseline | PR | Δ | {n_rounds} 轮极差(base/pr) | "
-            f"取值区间 base / pr | 可判读 |"
-        )
-        print("|---|---|---|---|---|---|---|")
-
-        for key, label, direction in METRICS:
-            bs, ps = series(runs["base"], key), series(runs["pr"], key)
-            if not bs or not ps:
-                continue
-            base_v, pr_v = statistics.median(bs), statistics.median(ps)
-            if not base_v:
-                continue
-            delta = (pr_v - base_v) / base_v * 100
-            good = (delta > 0) if direction == "higher" else (delta < 0)
-            mark = "✅" if abs(delta) >= 1 and good else ("🔴" if abs(delta) >= 1 else "·")
-
-            sb, sp = spread_pct(bs), spread_pct(ps)
-            spread_txt = "-" if sb is None or sp is None else f"{sb:.1f}%/{sp:.1f}%"
-            # 两分支的轮次取值区间完全不重叠才算测得出来；比“Δ 超过极差”稳健，
-            # 单个离群轮只会撑大区间，不会伪造分离。
-            if len(bs) < 2 or len(ps) < 2:
-                verdict = "?"
-            elif max(bs) < min(ps) or max(ps) < min(bs):
-                verdict = "是"
-                resolvable += 1
-            else:
-                verdict = "**否**"
-                unresolved += 1
-            print(
-                f"| {label} | {base_v:.4g} | {pr_v:.4g} | "
-                f"{delta:+.2f}% {mark} | {spread_txt} | "
-                f"[{min(bs):.3g},{max(bs):.3g}] / [{min(ps):.3g},{max(ps):.3g}] | "
-                f"{verdict} |"
-            )
-
-        print(f"\n有效性校验（两分支应当一致，不一致则对比不成立）：")
-        print("| 项 | baseline | PR |")
-        print("|---|---|---|")
-        for key, label in VALIDITY:
-            bs, ps = series(runs["base"], key), series(runs["pr"], key)
-            if not bs or not ps:
-                continue
-            bm, pm = statistics.median(bs), statistics.median(ps)
-            flag = ""
-            if key in ("output_tokens_mean", "audio_duration_mean_s") and bm:
-                if abs(pm - bm) / bm > 0.05:
-                    flag = "  ⚠️ 相差 >5%，延迟对比失效"
-            print(f"| {label} | {bm:.4g} | {pm:.4g}{flag} |")
+        for arm in compare:
+            r, u = emit_comparison(runs[REFERENCE_ARM], runs[arm], REFERENCE_ARM, arm)
+            resolvable += r
+            unresolved += u
+        emit_validity(runs, [REFERENCE_ARM] + compare)
 
     total = resolvable + unresolved
     if total:
-        print(f"\n### 判读\n")
-        print(f"{total} 项对比中 **{resolvable} 项** 两分支取值区间完全分离，可以采信；")
+        print("\n### 判读\n")
+        print(f"{total} 项对比中 **{resolvable} 项** 取值区间完全分离，可以采信；")
         print(f"其余 {unresolved} 项区间重叠，不支持任何方向的结论。")
 
     if all_warnings:
