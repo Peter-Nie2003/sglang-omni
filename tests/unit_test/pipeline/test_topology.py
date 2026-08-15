@@ -357,6 +357,54 @@ def test_qwen3_tts_rejects_splitting_preprocessing_from_the_engine() -> None:
         compile_logical_processes(isolated)
 
 
+def test_qwen3_tts_can_isolate_vocoder_with_explicit_fractions() -> None:
+    from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
+
+    config = ConfigManager(Qwen3TTSPipelineConfig(model_path="dummy")).merge_config(
+        {
+            "stages.vocoder.process": "vocoder",
+            "stages.tts_engine.runtime.resources.total_gpu_memory_fraction": 0.85,
+            "stages.vocoder.runtime.resources.total_gpu_memory_fraction": 0.10,
+        }
+    )
+
+    assert _compiled_fractions(config) == {"tts_engine": 0.85, "vocoder": 0.10}
+    assert [
+        (group.name, group.stage_names) for group in _compiled_topology(config).groups
+    ] == [
+        ("pipeline", ("preprocessing", "tts_engine")),
+        ("vocoder", ("vocoder",)),
+    ]
+
+
+def test_minimax_music3_allows_ar_acoustic_process_boundary() -> None:
+    from sglang_omni.models.minimax_music3.config import (
+        MiniMaxMusic3DualGPUPipelineConfig,
+    )
+
+    config = MiniMaxMusic3DualGPUPipelineConfig(model_path="dummy")
+
+    plan, _ = compile_logical_processes(config)
+
+    assert plan.stage_to_process == {
+        "preprocessing": "minimax_music3_ar",
+        "minimax_music3_ar": "minimax_music3_ar",
+        "dit_dav": "minimax_music3_dit_dav",
+    }
+
+
+def test_minimax_music3_rejects_splitting_preprocessing_from_ar() -> None:
+    from sglang_omni.models.minimax_music3.config import (
+        MiniMaxMusic3DualGPUPipelineConfig,
+    )
+
+    config = MiniMaxMusic3DualGPUPipelineConfig(model_path="dummy")
+    isolated = _isolate(config, preprocessing="preprocessing")
+
+    with pytest.raises(ValueError, match="'preprocessing' -> 'minimax_music3_ar'"):
+        compile_logical_processes(isolated)
+
+
 def test_higgs_default_groups_the_frontend_and_can_split_it_further() -> None:
     from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 
