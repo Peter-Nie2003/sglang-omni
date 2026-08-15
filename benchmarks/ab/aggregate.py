@@ -44,6 +44,9 @@ ARM_ORDER = [
     "gap0",
     "gap10",
     "gap25",
+    "aux",
+    "inline",
+    "tip",
 ]
 
 
