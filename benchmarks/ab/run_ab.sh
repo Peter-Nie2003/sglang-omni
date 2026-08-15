@@ -17,10 +17,10 @@ GPU_THINKER="${GPU_THINKER:-0}"   # thinker + image_encoder + audio_encoder
 GPU_TALKER="${GPU_TALKER:-1}"     # talker_ar + code2wav
 GPUS="$GPU_THINKER,$GPU_TALKER"
 
-CONCURRENCIES=(1 8 16 32 64)
-REPEATS=3             # 计入平均的轮数
-DISCARD=1             # 每次 server 重启后丢弃的轮数
-SAMPLES_PER_CONC=8    # N = max(32, SAMPLES_PER_CONC * C)
+read -ra CONCURRENCIES <<< "${CONCURRENCIES:-1 8 16 32 64}"
+REPEATS="${REPEATS:-3}"                    # 计入平均的轮数
+DISCARD="${DISCARD:-1}"                    # 每次 server 重启后丢弃的轮数
+SAMPLES_PER_CONC="${SAMPLES_PER_CONC:-8}"  # N = max(32, SAMPLES_PER_CONC * C)
 MAX_NEW_TOKENS=256
 IDLE_MIB=2000         # 两张卡空闲时的显存上限
 FORCE_GPU_CLEANUP="${FORCE_GPU_CLEANUP:-0}"
@@ -84,6 +84,9 @@ preflight() {
   assert_imports_from_worktree "$PR_WT"
   log "GPU $GPU_THINKER (thinker) <-> GPU $GPU_TALKER (talker) 互联方式："
   nvidia-smi topo -m 2>/dev/null | grep -E "^\s+GPU0|^GPU${GPU_THINKER}\b"
+  log "同机其他 GPU 占用（非空即有别的租户，会挤 NVSwitch 带宽）："
+  nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader \
+    | awk -F, -v a="$GPU_THINKER" -v b="$GPU_TALKER" '$1+0!=a && $1+0!=b && $2+0>500'
   local used; used=$(gpu_used_mib)
   if (( used >= IDLE_MIB )); then
     log "!!! 开跑前 GPU $GPUS 已占用 ${used} MiB —— 有别的任务在这两张卡上"
