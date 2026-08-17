@@ -54,8 +54,6 @@ class Qwen3OmniPlacementPolicy:
 
         for thinker in plan.instances_of("thinker"):
             for talker in plan.instances_of("talker_ar"):
-                if thinker.tp_size != 1 or talker.tp_size != 1:
-                    continue
                 if not set(thinker.gpu_ids).intersection(talker.gpu_ids):
                     continue
                 raise ValueError(
