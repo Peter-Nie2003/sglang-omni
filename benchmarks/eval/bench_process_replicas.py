@@ -427,7 +427,31 @@ def _run_qwen_load(
             "command": cmd,
         }
     payload = json.loads(results_path.read_text())
-    return {"ok": True, "summary": payload.get("summary", {}), "command": cmd}
+    summary = payload.get("summary", {})
+    # benchmark_omni_seedtts exits 0 and still writes speed_results.json when
+    # every request failed, so the exit code alone is not evidence that this
+    # arm produced any work. An arm that failed fast would otherwise be
+    # reported as the fastest one.
+    completed = int(summary.get("completed_requests", 0) or 0)
+    failed = int(summary.get("failed_requests", 0) or 0)
+    if completed == 0:
+        return {
+            "ok": False,
+            "error": f"no request completed ({failed} failed); see client.log",
+            "summary": summary,
+            "command": cmd,
+        }
+    if failed:
+        return {
+            "ok": False,
+            "error": (
+                f"{failed}/{completed + failed} requests failed; an arm with "
+                "failures is not comparable, see client.log"
+            ),
+            "summary": summary,
+            "command": cmd,
+        }
+    return {"ok": True, "summary": summary, "command": cmd}
 
 
 # --------------------------------------------------------------------------
@@ -526,8 +550,21 @@ async def _higgs_closed_loop(
     summary["truncated_requests"] = truncated
     summary["measure_window_s"] = measure_s
     summary["warmup_window_s"] = warmup_s
+
+    # Same trap as the Qwen path: requests that fail come back fast, so an arm
+    # that errored on everything would post the best throughput.
+    completed = int(summary.get("completed_requests", 0) or 0)
+    failed = int(summary.get("failed_requests", 0) or 0)
+    if completed == 0:
+        error = f"no request completed in the window ({failed} failed)"
+    elif failed:
+        error = f"{failed}/{completed + failed} requests failed; arm not comparable"
+    else:
+        error = None
+
     return {
-        "ok": bool(measured),
+        "ok": error is None,
+        "error": error,
         "summary": summary,
         "errors": errors[:20],
         "error_count": len(errors),
@@ -702,8 +739,16 @@ def _measure_qwen(
         "artifacts": str(out_dir),
     }
     (out_dir / "measurement.json").write_text(json.dumps(measurement, indent=2))
+    summary = measurement["summary"]
     status = "ok" if load["ok"] else f"FAILED ({load.get('error')})"
-    print(f"    -> {status} in {elapsed:.1f}s", flush=True)
+    print(
+        f"    -> {status} in {elapsed:.1f}s "
+        f"[completed={summary.get('completed_requests')} "
+        f"failed={summary.get('failed_requests')} "
+        f"qps={summary.get('throughput_qps')} "
+        f"lat_mean={summary.get('latency_mean_s')}]",
+        flush=True,
+    )
     return measurement
 
 
@@ -772,8 +817,16 @@ def _measure_higgs(
         "artifacts": str(out_dir),
     }
     (out_dir / "measurement.json").write_text(json.dumps(measurement, indent=2))
+    summary = measurement["summary"]
     status = "ok" if measurement["ok"] else f"FAILED ({load.get('error')})"
-    print(f"    -> {status} in {elapsed:.1f}s", flush=True)
+    print(
+        f"    -> {status} in {elapsed:.1f}s "
+        f"[completed={summary.get('completed_requests')} "
+        f"failed={summary.get('failed_requests')} "
+        f"truncated={summary.get('truncated_requests')} "
+        f"qps={summary.get('throughput_qps')}]",
+        flush=True,
+    )
     return measurement
 
 
