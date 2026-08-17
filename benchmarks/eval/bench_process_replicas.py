@@ -303,8 +303,30 @@ def _profiler_report(event_dir: Path) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 
-def _binding_evidence(log_text: str, arm: Arm) -> dict[str, Any]:
-    """Did admission actually spread across the replicas the config declares?"""
+def _member_stages(config_path: str) -> dict[str, list[str]]:
+    """Process name -> member stage names, read from the arm's own config."""
+    from sglang_omni.config.manager import ConfigManager
+
+    config = ConfigManager.from_file(str(REPO_ROOT / config_path)).config
+    members: dict[str, list[str]] = {}
+    for stage in config.stages:
+        members.setdefault(stage.process or stage.name, []).append(stage.name)
+    return members
+
+
+def _binding_evidence(
+    log_text: str, arm: Arm, members: dict[str, list[str]]
+) -> dict[str, Any]:
+    """Did admission actually spread across the replicas the config declares?
+
+    ``assign_replica_bindings`` projects a process's chosen replica onto each
+    of its *member stages*, so the logged dict is keyed by stage name, not by
+    process name. Those coincide for Qwen3-Omni (the `talker_ar` process holds
+    one stage also called `talker_ar`) but not for Higgs, whose `tts_frontend`
+    process holds `preprocessing` and `audio_encoder`. Looking the process
+    name up in that dict finds nothing and reports a working deployment as
+    unbound, so the member stages have to come from the config.
+    """
     observed: dict[str, set[int]] = {}
     admissions = 0
     for raw in _BINDINGS_RE.findall(log_text):
@@ -324,20 +346,25 @@ def _binding_evidence(log_text: str, arm: Arm) -> dict[str, Any]:
         instances.setdefault(process, set()).add(int(replica_id))
 
     problems: list[str] = []
+    checked_stages: dict[str, list[str]] = {}
     for process, count in arm.replicated.items():
         expected = set(range(count))
+        stages = members.get(process) or [process]
+        checked_stages[process] = stages
+
         spawned = instances.get(process, set())
         if spawned != expected:
             problems.append(
                 f"{process}: spawned replica instances {sorted(spawned)} "
                 f"!= configured {sorted(expected)}"
             )
-        bound = observed.get(process, set())
-        if bound != expected:
-            problems.append(
-                f"{process}: admission bound {sorted(bound)} "
-                f"!= configured {sorted(expected)}"
-            )
+        for stage in stages:
+            bound = observed.get(stage, set())
+            if bound != expected:
+                problems.append(
+                    f"{process}.{stage}: admission bound {sorted(bound)} "
+                    f"!= configured {sorted(expected)}"
+                )
     if not arm.replicated and observed:
         problems.append(
             f"control arm produced replica bindings {sorted(observed)}; "
@@ -349,6 +376,7 @@ def _binding_evidence(log_text: str, arm: Arm) -> dict[str, Any]:
         "bound_replicas": {k: sorted(v) for k, v in sorted(observed.items())},
         "spawned_instances": {k: sorted(v) for k, v in sorted(instances.items())},
         "expected_replicas": dict(sorted(arm.replicated.items())),
+        "checked_member_stages": checked_stages,
         "ok": not problems,
         "problems": problems,
     }
@@ -688,7 +716,7 @@ def _run_arm(
             record["gpu_release_error"] = str(exc)
 
     log_text = server_log.read_text() if server_log.exists() else ""
-    record["binding"] = _binding_evidence(log_text, arm)
+    record["binding"] = _binding_evidence(log_text, arm, _member_stages(arm.config))
     if not record["binding"]["ok"]:
         print(f"  BINDING PROBLEM: {record['binding']['problems']}", flush=True)
 
