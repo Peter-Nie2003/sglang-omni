@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Higgs TTS treatment arm for the frontend process-replication A/B: two
+# tts_frontend replicas (preprocessing + audio_encoder) pinned to the same
+# GPU 0.
+#
+# Layout (1 GPU):
+#   GPU 0: tts_frontend@r0 + tts_frontend@r1 + pipeline (tts_engine + vocoder)
+#
+# `replica_devices: [0, 0]` is what puts both replicas on one device; the
+# audio_encoder factory receives an explicit gpu_id=0 for each. Admission
+# round-robins between them, so `bindings={'tts_frontend': 0|1}` in the server
+# log is the residency evidence for this arm.
+#
+# Memory budget on GPU 0:
+#   audio_encoder  0.0245 x 2 = 0.049  (per-replica fraction, as specified)
+#   tts_engine     0.85
+#   vocoder        0.10               (pipeline default)
+#   total          0.999
+#
+# WARNING: 0.999 passes validation (the cap is 1.0) but leaves almost no room
+# for CUDA contexts and allocator fragmentation. If startup OOMs, trim
+# tts_engine rather than the encoder — and trim it in BOTH arms, otherwise the
+# comparison stops being like-for-like. Note that this arm already reserves
+# 0.0245 more of the GPU than higgs_frontend_single.yaml does; that asymmetry
+# is inherent to a per-replica encoder budget and belongs in the writeup.
+#
+# Serve:
+#   sgl-omni serve --config examples/configs/higgs_frontend_replica2.yaml --port 8092
+
+config_cls: HiggsTtsPipelineConfig
+name: higgs-frontend-replica2
+model_path: bosonai/higgs-tts-3-4b
+
+processes:
+  tts_frontend:
+    num_replicas: 2
+    replica_devices: [0, 0]
+
+stage_overrides:
+  audio_encoder:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.0245
+  tts_engine:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.85
+
+runtime_overrides:
+  tts_engine:
+    max_new_tokens: 512
+    max_running_requests: 96
+    cuda_graph_max_bs: 96
+    prefill_coalesce_requests: 32
+    prefill_coalesce_wait_ms: 300

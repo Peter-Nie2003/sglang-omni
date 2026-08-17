@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Higgs TTS baseline arm for the frontend process-replication A/B: one
+# tts_frontend process (preprocessing + audio_encoder) on GPU 0.
+#
+# Layout (1 GPU):
+#   GPU 0: tts_frontend (preprocessing CPU + audio_encoder) + pipeline
+#          (tts_engine + vocoder)
+#
+# Memory budget on GPU 0:
+#   audio_encoder  0.0245  (one replica)
+#   tts_engine     0.85
+#   vocoder        0.10    (pipeline default)
+#   total          0.9745
+#
+# A/B counterpart: higgs_frontend_replica2.yaml, which runs two tts_frontend
+# replicas pinned to the same GPU 0.
+#
+# Serve:
+#   sgl-omni serve --config examples/configs/higgs_frontend_single.yaml --port 8092
+#
+# MPS must be off for this comparison: examples/mps_dp/launch.sh starts an
+# MPS control daemon, and same-GPU replicas behave differently under it.
+
+config_cls: HiggsTtsPipelineConfig
+name: higgs-frontend-single
+model_path: bosonai/higgs-tts-3-4b
+
+stage_overrides:
+  audio_encoder:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.0245
+  tts_engine:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.85
+
+runtime_overrides:
+  tts_engine:
+    max_new_tokens: 512
+    max_running_requests: 96
+    cuda_graph_max_bs: 96
+    prefill_coalesce_requests: 32
+    prefill_coalesce_wait_ms: 300
