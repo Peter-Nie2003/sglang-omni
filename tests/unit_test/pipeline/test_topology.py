@@ -316,9 +316,7 @@ def test_moss_tts_local_default_isolates_vocoder_with_declared_fractions() -> No
 
 
 def test_moss_tts_local_split_rejects_splitting_the_pipeline() -> None:
-    from sglang_omni.models.moss_tts_local.config import (
-        MossTTSLocalSplitPipelineConfig,
-    )
+    from sglang_omni.models.moss_tts_local.config import MossTTSLocalSplitPipelineConfig
 
     config = MossTTSLocalSplitPipelineConfig(model_path="dummy")
     assert _process_names(config) == ["pipeline"] * 3
@@ -460,32 +458,46 @@ def test_ming_omni_speech_default_topology_compiles() -> None:
 # --- Removed configuration entry points -----------------------------------------
 
 
-def test_serve_cli_rejects_removed_isolate_stage_flag() -> None:
+@pytest.mark.parametrize(
+    ("flag", "value", "config_field"),
+    [
+        ("--isolate-stage", "b", "isolate_stage"),
+        ("--stage-process", "a=frontend", "stage_process"),
+    ],
+)
+def test_serve_cli_rejects_removed_process_flags_from_valid_config(
+    monkeypatch: pytest.MonkeyPatch,
+    flag: str,
+    value: str,
+    config_field: str,
+) -> None:
     from typer.testing import CliRunner
 
     from sglang_omni.cli import app
 
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[_stage("a", process="pipeline", terminal=True)],
+    )
+    monkeypatch.setattr(
+        ConfigManager,
+        "from_file",
+        staticmethod(lambda _path: ConfigManager(config)),
+    )
+
     result = CliRunner().invoke(
-        app, ["serve", "--config", "ignored.yaml", "--isolate-stage", "b"]
+        app,
+        ["serve", "--config", "valid.yaml", flag, value],
     )
 
     assert result.exit_code != 0
-
-
-def test_serve_cli_rejects_removed_stage_process_flag() -> None:
-    from typer.testing import CliRunner
-
-    from sglang_omni.cli import app
-
-    result = CliRunner().invoke(
-        app, ["serve", "--config", "ignored.yaml", "--stage-process", "a=frontend"]
-    )
-
-    assert result.exit_code != 0
+    assert result.exception is not None
+    assert config_field in str(result.exception)
+    assert "Extra inputs are not permitted" in str(result.exception)
 
 
 def test_fused_stages_config_entry_is_removed() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="fused_stages") as exc_info:
         PipelineConfig(
             model_path="dummy",
             stages=[
@@ -494,6 +506,7 @@ def test_fused_stages_config_entry_is_removed() -> None:
             ],
             fused_stages=[["a", "b"]],
         )
+    assert "Extra inputs are not permitted" in str(exc_info.value)
 
 
 # --- Physical process topology --------------------------------------------------

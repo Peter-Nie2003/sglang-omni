@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
+import torch
 
 from sglang_omni.config.runtime import resolve_factory_signature_args
 from sglang_omni.config.schema import EndpointsConfig, ProcessConfig
@@ -75,19 +78,50 @@ def test_higgs_frontend_replicas_inject_same_gpu_id(tmp_path) -> None:
 
 
 def test_higgs_audio_encoder_resolves_placement_gpu_id(monkeypatch) -> None:
-    resolved = []
+    resolved: list[tuple[str, int | None]] = []
+    codec_loads: list[tuple[str, str, str]] = []
 
     def resolve(device: str, gpu_id: int | None) -> str:
         resolved.append((device, gpu_id))
-        raise RuntimeError("device resolved")
+        return f"{device}:{gpu_id}"
+
+    class FakeAdapter:
+        def __init__(self, _tokenizer) -> None:
+            pass
+
+    class FakeCodec:
+        SAMPLE_RATE = 8
+
+        def __init__(self) -> None:
+            self.model = SimpleNamespace(acoustic_encoder=object())
+
+        def encode_reference(self, _waveform, *, sample_rate: int) -> torch.Tensor:
+            assert sample_rate == self.SAMPLE_RATE
+            return torch.zeros((1, 8), dtype=torch.long)
+
+    fake_codec = FakeCodec()
+
+    def load_codec(checkpoint: str, device: str, dtype: str) -> FakeCodec:
+        codec_loads.append((checkpoint, device, dtype))
+        return fake_codec
 
     monkeypatch.setattr(stages, "resolve_device_spec", resolve)
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(stages.Tokenizer, "from_file", lambda _path: object())
+    monkeypatch.setattr(
+        stages,
+        "PreTrainedTokenizerFast",
+        lambda tokenizer_object: tokenizer_object,
+    )
+    monkeypatch.setattr(stages, "HiggsTokenizerAdapter", FakeAdapter)
+    monkeypatch.setattr(stages, "get_or_load_codec", load_codec)
+    monkeypatch.setattr(stages.torch, "compile", lambda module, **_kwargs: module)
 
-    with pytest.raises(RuntimeError, match="device resolved"):
-        stages.create_audio_encoder_executor(
-            "model",
-            device="cuda",
-            gpu_id=3,
-        )
+    stages.create_audio_encoder_executor(
+        "model",
+        device="cuda",
+        gpu_id=3,
+    )
 
     assert resolved == [("cuda", 3)]
+    assert codec_loads == [("model", "cuda:3", "bfloat16")]

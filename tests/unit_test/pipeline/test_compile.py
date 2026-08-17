@@ -25,6 +25,13 @@ from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, fake_factory_
 from tests.unit_test.pipeline.helpers import stage
 
 
+@pytest.fixture
+def synthetic_gpu_topology(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sglang_omni.pipeline import runtime_config
+
+    monkeypatch.setattr(runtime_config, "_visible_device_count", lambda: None)
+
+
 def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
     """Preserves topology helpers and rejects invalid stage graphs early."""
     config = PipelineConfig(
@@ -159,6 +166,7 @@ def test_runner_specs_wire_routes_overrides_aggregation_and_streams(tmp_path) ->
 def test_runner_specs_defer_factory_signature_import_to_child(
     tmp_path,
     monkeypatch,
+    synthetic_gpu_topology,
 ) -> None:
     import sglang_omni.config.runtime as runtime_config
 
@@ -379,7 +387,9 @@ def test_runner_specs_wire_direct_cuda_ipc_payload_disable_flag() -> None:
     assert specs["thinker"].disable_direct_cuda_ipc_payload is False
 
 
-def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:
+def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages(
+    synthetic_gpu_topology,
+) -> None:
     config = PipelineConfig(
         model_path="model",
         stages=[
@@ -410,7 +420,10 @@ def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:
     )
 
 
-def test_runner_copies_whole_process_and_injects_replica_devices(tmp_path) -> None:
+def test_runner_copies_whole_process_and_injects_replica_devices(
+    tmp_path,
+    synthetic_gpu_topology,
+) -> None:
     config = PipelineConfig(
         model_path="model",
         stages=[
@@ -477,7 +490,9 @@ def test_runner_copies_whole_process_and_injects_replica_devices(tmp_path) -> No
 
 
 def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(
-    tmp_path, monkeypatch
+    tmp_path,
+    monkeypatch,
+    synthetic_gpu_topology,
 ) -> None:
     """Preserves TP process specs and one-visible-device env mapping."""
     monkeypatch.setattr(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sglang_omni.config.placement import build_stage_placement_plan
 from sglang_omni.config.schema import PipelineConfig, StageConfig
@@ -14,7 +14,6 @@ from sglang_omni.config.topology import (
     compile_logical_processes,
 )
 from sglang_omni.pipeline.replicas import expand_replica_stages
-from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.scheduling.messages import IncomingMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
     FakeRelay,
@@ -24,6 +23,9 @@ from tests.unit_test.fixtures.pipeline_fakes import (
 )
 
 FACTORY = fake_factory_path("make_scheduler")
+
+if TYPE_CHECKING:
+    from sglang_omni.pipeline.stage.runtime import Stage
 
 
 def stage(name: str, **kwargs: Any) -> StageConfig:
@@ -62,6 +64,8 @@ def make_stage(
     control_plane: RecordingStageControlPlane | None = None,
     **kwargs: Any,
 ) -> Stage:
+    from sglang_omni.pipeline.stage.runtime import Stage
+
     return Stage(
         name=name,
         role=role,

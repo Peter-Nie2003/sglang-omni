@@ -468,15 +468,17 @@ class TestQwenReplicaPlacementPolicy:
 
 class TestRemovedStageLevelReplicaConfig:
     def test_stage_num_replicas_is_rejected(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="num_replicas") as exc_info:
             _stage("s", num_replicas=2)
+        assert "Extra inputs are not permitted" in str(exc_info.value)
 
     def test_stage_replica_devices_is_rejected(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="replica_devices") as exc_info:
             _stage("s", replica_devices="0,1")
+        assert "Extra inputs are not permitted" in str(exc_info.value)
 
     def test_fused_stages_is_rejected(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="fused_stages") as exc_info:
             PipelineConfig(
                 model_path="m",
                 stages=[
@@ -485,6 +487,7 @@ class TestRemovedStageLevelReplicaConfig:
                 ],
                 fused_stages=[["a", "b"]],
             )
+        assert "Extra inputs are not permitted" in str(exc_info.value)
 
     def test_stage_overrides_reject_replica_keys(self):
         pytest.importorskip("transformers")
@@ -492,7 +495,8 @@ class TestRemovedStageLevelReplicaConfig:
 
         with pytest.raises(ValueError, match="unsupported keys"):
             manager._apply_stage_overrides(
-                _speech_config(), {"code2wav": {"num_replicas": 3}}
+                _config([_stage("code2wav")]),
+                {"code2wav": {"num_replicas": 3}},
             )
 
 
