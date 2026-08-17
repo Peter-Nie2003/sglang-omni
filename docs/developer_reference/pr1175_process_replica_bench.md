@@ -80,9 +80,18 @@ python -m benchmarks.eval.bench_process_replicas \
     --gpus 0,1,2 \
     --repeats 3 \
     --concurrency 1,16,32,64 \
-    --qwen-samples 128 \
     --out results/pr1175
 ```
+
+Samples per measurement are `max(--qwen-samples, concurrency × --qwen-waves)`,
+capped at the 1088-sample EN split — 128 / 160 / 320 / 640 at the default
+floor of 128 and 10 waves. A fixed budget starves the high-concurrency rows:
+128 samples at concurrency 64 is two waves, so ramp-up and drain dominate what
+is supposed to be a steady-state throughput number, and a genuine capacity
+knee becomes indistinguishable from a drain artifact. Every arm sees the same
+count at the same concurrency; counts differ across concurrency levels, which
+is fine because those rows are never compared against each other. The resolved
+counts are recorded in `provenance.json` and per measurement.
 
 `--gpus` takes physical ids, so `--gpus 3,5,7` runs the same topologies on
 three otherwise-idle cards without editing any YAML — the configs address

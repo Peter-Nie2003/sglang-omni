@@ -696,6 +696,19 @@ def _run_arm(
     return record
 
 
+def _qwen_sample_count(args: argparse.Namespace, concurrency: int) -> int:
+    """Samples for one measurement, scaled so the closed loop reaches steady state.
+
+    A fixed budget starves the high-concurrency rows: 128 samples at
+    concurrency 64 is two waves, and ramp-up plus drain dominate what should
+    be a steady-state throughput number. Every arm sees the same count at the
+    same concurrency, which is what the comparison requires; counts differ
+    across concurrency levels, which is fine because those rows are never
+    compared against each other.
+    """
+    return min(SEEDTTS_EN_TOTAL, max(args.qwen_samples, concurrency * args.qwen_waves))
+
+
 def _measure_qwen(
     *,
     arm: Arm,
@@ -711,14 +724,15 @@ def _measure_qwen(
     event_dir = out_dir / "events"
     event_dir.mkdir(parents=True, exist_ok=True)
     run_id = f"{arm.key}-r{repeat}-{tag}"
+    samples = _qwen_sample_count(args, concurrency)
 
-    print(f"  concurrency={concurrency} ...", flush=True)
+    print(f"  concurrency={concurrency} samples={samples} ...", flush=True)
     profile_error = _profile_start(port, run_id, event_dir)
     started = time.perf_counter()
     load = _run_qwen_load(
         port=port,
         concurrency=concurrency,
-        samples=args.qwen_samples,
+        samples=samples,
         max_new_tokens=args.qwen_max_new_tokens,
         voice_clone=args.qwen_voice_clone,
         out_dir=out_dir,
@@ -729,6 +743,7 @@ def _measure_qwen(
 
     measurement = {
         "concurrency": concurrency,
+        "samples": samples,
         "ok": load["ok"],
         "wall_clock_s": round(elapsed, 2),
         "summary": load.get("summary", {}),
@@ -954,7 +969,11 @@ def _run_suite(
             "arms": [{"key": a.key, "config": a.config, "label": a.label} for a in arms],
             "repeats": args.repeats,
             "concurrency": args.concurrency,
-            "qwen_samples": args.qwen_samples,
+            "qwen_samples_floor": args.qwen_samples,
+            "qwen_waves": args.qwen_waves,
+            "qwen_samples_resolved": {
+                str(c): _qwen_sample_count(args, c) for c in args.concurrency
+            },
             "qwen_max_new_tokens": args.qwen_max_new_tokens,
             "qwen_voice_clone": args.qwen_voice_clone,
             "higgs_concurrency": args.higgs_concurrency,
@@ -1038,7 +1057,21 @@ def main() -> int:
         help="Qwen3-Omni concurrency ladder.",
     )
     parser.add_argument("--qwen-model-path", default=QWEN_MODEL_PATH)
-    parser.add_argument("--qwen-samples", type=int, default=128)
+    parser.add_argument(
+        "--qwen-samples",
+        type=int,
+        default=128,
+        help="Floor on samples per measurement; see --qwen-waves.",
+    )
+    parser.add_argument(
+        "--qwen-waves",
+        type=int,
+        default=10,
+        help="Samples per measurement are max(--qwen-samples, concurrency x "
+        "this), capped at the 1088-sample EN split. A closed loop needs "
+        "several waves before it reaches steady state: at 128 samples, "
+        "concurrency 64 gets two, and ramp-up and drain dominate the result.",
+    )
     parser.add_argument("--qwen-max-new-tokens", type=int, default=256)
     parser.add_argument("--qwen-voice-clone", action="store_true")
     parser.add_argument("--higgs-model-path", default=HIGGS_MODEL_PATH)
