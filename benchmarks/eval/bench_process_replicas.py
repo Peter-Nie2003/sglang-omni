@@ -496,6 +496,7 @@ async def _higgs_closed_loop(
     max_new_tokens: int,
     model_name: str,
     samples: list,
+    stream: bool,
 ) -> dict[str, Any]:
     """Saturate the server for warmup_s + measure_s and keep only the middle.
 
@@ -514,11 +515,14 @@ async def _higgs_closed_loop(
     from benchmarks.tasks.tts import make_tts_send_fn
 
     api_url = f"http://localhost:{port}/v1/audio/speech"
+    # Non-streaming by default: only that branch carries X-Completion-Tokens
+    # and X-Engine-Time, which are the token-throughput numbers this
+    # comparison reports. Streaming trades them for TTFA and inter-chunk gap.
     send_fn = make_tts_send_fn(
         model_name,
         api_url,
-        response_format="pcm",
-        stream=True,
+        response_format="pcm" if stream else "wav",
+        stream=stream,
         ref_format="references",
         max_new_tokens=max_new_tokens,
     )
@@ -837,6 +841,7 @@ def _measure_higgs(
                 max_new_tokens=args.higgs_max_new_tokens,
                 model_name=model_path,
                 samples=samples,
+                stream=args.higgs_stream,
             )
         )
     except Exception as exc:
@@ -894,8 +899,13 @@ _HIGGS_METRICS = (
     "latency_mean_s",
     "latency_p95_s",
     "audio_throughput_s_per_s",
-    "output_throughput_tok_s",
+    # performance.py names these `output_throughput` and `output_tok_per_req_s`.
+    # Both stay empty under streaming: the server can only attach usage to the
+    # non-streaming response, because HTTP headers go out before the body and
+    # the token count is not known until the stream ends.
+    "output_throughput",
     "output_tok_per_req_s",
+    "output_tokens_mean",
     "measured_requests",
 )
 
@@ -1008,6 +1018,7 @@ def _run_suite(
             "higgs_warmup_s": args.higgs_warmup_s,
             "higgs_measure_s": args.higgs_measure_s,
             "higgs_max_new_tokens": args.higgs_max_new_tokens,
+            "higgs_stream": args.higgs_stream,
             "mps_running": _mps_running(),
         },
     )
@@ -1108,6 +1119,14 @@ def main() -> int:
     parser.add_argument("--higgs-measure-s", type=float, default=90.0)
     parser.add_argument("--higgs-max-new-tokens", type=int, default=512)
     parser.add_argument("--higgs-samples", type=int, default=SEEDTTS_EN_TOTAL)
+    parser.add_argument(
+        "--higgs-stream",
+        action="store_true",
+        help="Stream the Higgs responses. Off by default: only the "
+        "non-streaming branch carries the usage headers this comparison "
+        "reports as token throughput. Turning it on swaps those for TTFA and "
+        "inter-chunk gap.",
+    )
     args = parser.parse_args()
 
     gpus = [int(token) for token in args.gpus.split(",") if token.strip()]

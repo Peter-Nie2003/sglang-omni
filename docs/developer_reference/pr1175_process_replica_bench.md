@@ -138,9 +138,17 @@ was still running at the deadline is reported as `truncated_requests` and is
 not folded into the metrics.
 
 Reported: `throughput_qps`, `latency_mean_s` / `latency_p95_s`,
-`audio_throughput_s_per_s`, `output_throughput_tok_s`, `output_tok_per_req_s`,
-plus per-run GPU/CPU utilization (`resources`) and the profiler stage
-breakdown, from which the frontend stage time is read.
+`audio_throughput_s_per_s`, `output_throughput`, `output_tok_per_req_s`,
+`output_tokens_mean`, plus per-run GPU/CPU utilization (`resources`) and the
+profiler stage breakdown, from which the frontend stage time is read.
+
+The Higgs load is **non-streaming** by default. Token throughput comes from
+the `X-Completion-Tokens` and `X-Engine-Time` response headers, and the
+server can only attach those to the non-streaming response: HTTP headers go
+out before the body, and the token count is not known until the stream ends.
+`--higgs-stream` swaps the token columns for TTFA and inter-chunk gap. Pick
+one and keep it fixed across every arm and repeat — `provenance.json` records
+which was used.
 
 Both arms fix `max_new_tokens=512`, `max_running_requests=96`,
 `cuda_graph_max_bs=96`, `prefill_coalesce_requests=32`,
