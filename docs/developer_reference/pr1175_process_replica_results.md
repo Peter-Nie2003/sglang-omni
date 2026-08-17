@@ -15,7 +15,7 @@ and the size of the win tracks whether the replicas got independent hardware.
 | Workload | Concurrency | Gain vs its control | Significance |
 | --- | --- | --- | --- |
 | Qwen3-Omni, 2 × (talker_ar + code2wav) on separate GPUs | 64 | **+52.1% QPS** | 32σ |
-| Qwen3-Omni, same | 32 | ~+24% (audio throughput) | — |
+| Qwen3-Omni, same | 32 | +24.5% QPS | 19σ |
 | Qwen3-Omni, same | 16 | +11.5% QPS | 4.3σ |
 | Qwen3-Omni, same | 1 | **−4.6% QPS** | 6σ |
 | Higgs TTS, 2 × tts_frontend on one GPU | 96 | **+11.6% QPS** | 11.7σ |
@@ -60,22 +60,26 @@ generate-only, `--temperature 0.0`, `--max-new-tokens 256`, samples scaled as
 | --- | --- | --- | --- | --- |
 | 1 | 2.179 ±0.006 | 2.233 ±0.017 | 2.131 ±0.013 | **−4.6%** |
 | 16 | 11.26 ±0.113 | 12.06 ±0.038 | 13.45 ±0.325 | **+11.5%** |
-| 32 | 14.12 ±0.101 | *pending* ¹ | 17.37 ±0.182 | ~+24% ² |
+| 32 | 14.12 ±0.101 | 13.95 ±0.148 | 17.37 ±0.182 | **+24.5%** |
 | 64 | 13.79 ±0.163 | 13.34 ±0.083 | 20.29 ±0.215 | **+52.1%** |
 
-¹ Lost in transcription from the terminal; read it back from
-`results/pr1175/qwen3-omni/summary.json`.
-² From `audio_throughput_s_per_s` (62.43 vs 50.23), which needs no QPS.
+The gain grows monotonically with concurrency and is negative at concurrency
+1. That shape is what replication should produce: a single request has nothing
+to spread across replicas and pays only the extra admission bookkeeping, while
+at load the replicated stage stops being the constraint.
 
 ### The controls saturate; the replicated arm does not
 
 ```
-pair2gpu :  11.26 → 14.12 → 13.79    knee at c=32, then falls back
-split3gpu:  12.06 → pending → 13.34  same shape
-replica2 :  13.45 → 17.37 → 20.29    still climbing at c=64
+                c=16     c=32     c=64
+pair2gpu :     11.26 →  14.12 →  13.79    knee at c=32, then falls back
+split3gpu:     12.06 →  13.95 →  13.34    same knee, same fallback
+replica2 :     13.45 →  17.37 →  20.29    still climbing at c=64
 ```
 
-Both controls cap out around 14 QPS. `replica2` has not reached its knee at
+Both controls peak at c=32 and lose ground by c=64 — the same curve, which is
+further evidence that the third GPU changed nothing structural. `replica2` has
+not reached its knee at
 concurrency 64 — the increments are still positive and only mildly decelerating
 (+3.92, then +2.92). **+52.1% is therefore a lower bound on the capacity gain,
 not the capacity gain.** A concurrency-128 point is needed to close this.
@@ -86,6 +90,7 @@ not the capacity gain.** A concurrency-128 point is needed to close this.
 | --- | --- |
 | 1 | +2.5% |
 | 16 | +7.1% |
+| 32 | −1.2% |
 | 64 | −3.3% |
 
 Giving `code2wav` its own card, without replicating anything, moves throughput
@@ -298,6 +303,5 @@ frontend relief. Artifacts for the streaming run are kept alongside.
    pass over a saved `replica2` run against its control.
 2. **Qwen3-Omni at concurrency 128** — `replica2` had not reached its knee at
    64, so +52.1% is a lower bound.
-3. **`split3gpu` concurrency 32 QPS** — read back from `summary.json`.
-4. **Streaming vs non-streaming discrepancy on Higgs** — +2.3% versus +11.6%
+3. **Streaming vs non-streaming discrepancy on Higgs** — +2.3% versus +11.6%
    for the same change.
