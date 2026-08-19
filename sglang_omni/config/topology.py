@@ -399,9 +399,18 @@ def _validate_gpu_process_colocation(
     stage_by_name = {stage.name: stage for stage in stages}
     gpu_processes: dict[int, set[str]] = defaultdict(set)
     missing_fraction: dict[int, set[str]] = defaultdict(set)
+    replica_instance_names = {
+        instance
+        for instances in gpu_placement.replica_instances.values()
+        if len(instances) > 1
+        for instance in instances
+    }
+    replica_gpus: set[int] = set()
 
     def record(gpu_id: int, process_name: str, stage: StageConfig) -> None:
         gpu_processes[gpu_id].add(process_name)
+        if stage.name in replica_instance_names:
+            replica_gpus.add(gpu_id)
         if stage.runtime.resources.total_gpu_memory_fraction is None:
             missing_fraction[gpu_id].add(stage.name)
 
@@ -427,9 +436,14 @@ def _validate_gpu_process_colocation(
         if len(process_names) <= 1:
             continue
         missing = missing_fraction.get(gpu_id, set())
-        if require and missing:
+        if (require or gpu_id in replica_gpus) and missing:
+            sharing = (
+                "has replica-induced GPU sharing"
+                if gpu_id in replica_gpus
+                else "is shared by multiple process groups"
+            )
             raise ValueError(
-                f"GPU {gpu_id} is shared by multiple process groups without "
+                f"GPU {gpu_id} {sharing} without "
                 "runtime.resources.total_gpu_memory_fraction: "
                 f"{_render_missing_fraction_stages(missing, gpu_placement)}"
             )

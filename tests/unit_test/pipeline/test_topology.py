@@ -677,7 +677,9 @@ def test_tp_process_names_must_be_unique_across_tp_stages() -> None:
         )
 
 
-def test_replica_induced_gpu_sharing_honours_memory_fraction_opt_out() -> None:
+def test_replica_induced_gpu_sharing_requires_memory_fractions_despite_opt_out() -> (
+    None
+):
     from sglang_omni.config import PlacementConfig
 
     config = PipelineConfig(
@@ -687,9 +689,8 @@ def test_replica_induced_gpu_sharing_honours_memory_fraction_opt_out() -> None:
         placement=PlacementConfig(require_memory_fraction_for_colocation=False),
     )
 
-    process_plan = _compiled_topology(config)
-
-    assert [group.name for group in process_plan.groups] == ["p0@r0", "p0@r1"]
+    with pytest.raises(ValueError, match="replica-induced GPU sharing"):
+        _compiled_topology(config)
 
 
 def test_replica_induced_gpu_sharing_accepts_declared_fractions() -> None:
