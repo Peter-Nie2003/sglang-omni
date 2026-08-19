@@ -229,7 +229,9 @@ physical process topology:
   default. Configs saved before this refactor are not auto-migrated: set
   `process="pipeline"` on every non-TP stage to recover the historical
   single-process behavior, or use any other shared/distinct process name to
-  opt into the declarative multi-stage-per-process layout;
+  opt into the declarative multi-stage-per-process layout. See
+  [Process Topology Migration](../basic_usage/process_topology_migration.md) for
+  replacements for the removed CLI and config entries;
 - explicit `stage.process` groups non-TP stages declaratively.
 
 A process group may contain CPU stages and stages on at most one GPU. When
