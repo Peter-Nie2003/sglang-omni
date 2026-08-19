@@ -24,7 +24,7 @@ from sglang_omni.config.runtime import (
     resolve_stage_static_factory_args,
 )
 from sglang_omni.config.schema import PipelineConfig, StageConfig
-from sglang_omni.config.topology import ProcessTopologyPlan
+from sglang_omni.config.topology import LogicalProcessPlan, ProcessTopologyPlan
 from sglang_omni.pipeline import Coordinator
 from sglang_omni.pipeline.replicas import ReplicaTopology
 from sglang_omni.pipeline.runtime_config import (
@@ -43,8 +43,12 @@ from sglang_omni.utils.imports import import_string
 logger = logging.getLogger(__name__)
 
 
-def resolve_coordinator_max_in_flight(config: PipelineConfig) -> int | None:
-    """Return generation running+queued capacity, if both bounds are known."""
+def resolve_coordinator_max_in_flight(
+    config: PipelineConfig,
+    *,
+    logical_process_plan: LogicalProcessPlan,
+) -> int | None:
+    """Return total generation running+queued capacity across replicas."""
     stage_name = type(config).generation_sglang_role_to_stage().get("generation")
     stage = next((item for item in config.stages if item.name == stage_name), None)
     if stage is None:
@@ -66,7 +70,8 @@ def resolve_coordinator_max_in_flight(config: PipelineConfig) -> int | None:
         return None
     if running < 1 or queued < 0:
         return None
-    return running + queued
+    num_replicas = logical_process_plan.process_of(stage.name).num_replicas
+    return (running + queued) * num_replicas
 
 
 def _build_stage_groups(
@@ -477,7 +482,10 @@ class MultiProcessPipelineRunner:
                 if self._config.terminal_stages_fn
                 else None
             )
-            max_in_flight = resolve_coordinator_max_in_flight(self._config)
+            max_in_flight = resolve_coordinator_max_in_flight(
+                self._config,
+                logical_process_plan=prep.logical_process_plan,
+            )
             self._coordinator = Coordinator(
                 completion_endpoint=prep.endpoints["completion"],
                 abort_endpoint=prep.endpoints["abort"],
