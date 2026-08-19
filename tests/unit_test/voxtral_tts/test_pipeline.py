@@ -19,6 +19,7 @@ from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from tests.unit_test.fakes import FakeExecutionBridge, FakeServerArgs
+from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
 def test_voxtral_tts_config_uses_current_stage_schema() -> None:
