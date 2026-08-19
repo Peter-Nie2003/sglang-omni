@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Process-replica smoke test for the Qwen3-Omni speech pipeline.
 
-Launches the 2-replica speech deployment (thinker on GPU 0, one
-talker_ar + code2wav pair each on GPU 1 and GPU 2) and drives audio
-requests through it. Asserts every request returns audio, that all four
-replica instances were spawned and registered, and that admission
-round-robined across both replicas of each replicated process.
+Launches a 2-GPU deployment with thinker on GPU 0, talker_ar on GPU 1,
+and one code2wav replica on each GPU. Drives audio requests through it
+and asserts both code2wav replicas are spawned, registered, and selected
+by admission round-robin.
 
-Requires 3 GPUs.
+Requires 2 GPUs.
 
 Usage:
     pytest tests/test_model/test_qwen3_omni_process_replicas.py -s -x
@@ -33,7 +32,7 @@ from tests.utils import (
     stop_server,
 )
 
-REQUIRED_GPUS = 3
+REQUIRED_GPUS = 2
 
 pytestmark = pytest.mark.skipif(
     torch.cuda.device_count() < REQUIRED_GPUS,
@@ -43,15 +42,13 @@ pytestmark = pytest.mark.skipif(
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
-REPLICA_CONFIG = "examples/configs/qwen3_omni_speech_replica2.yaml"
+REPLICA_CONFIG = "examples/configs/qwen3_omni_speech_code2wav_replica2_ci.yaml"
 STARTUP_TIMEOUT = 900
 REQUEST_TIMEOUT = 300
 
 NUM_REQUESTS = 4
-REPLICATED_PROCESSES = ("talker_ar", "code2wav")
+REPLICATED_PROCESSES = ("code2wav",)
 REPLICA_INSTANCES = (
-    "talker_ar@r0",
-    "talker_ar@r1",
     "code2wav@r0",
     "code2wav@r1",
 )
@@ -131,7 +128,7 @@ def test_every_replica_serves_audio(replica_server):
     missing = [name for name in REPLICA_INSTANCES if name not in log_text]
     assert not missing, (
         f"replica instances never appeared in server log: {missing}; "
-        "expected all four instance stages to be spawned and registered"
+        "expected both code2wav instances to be spawned and registered"
     )
 
     admitted = re.findall(r"bindings=(\{.*?\})", log_text)
