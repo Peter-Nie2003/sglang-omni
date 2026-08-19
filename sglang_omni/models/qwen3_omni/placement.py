@@ -52,8 +52,15 @@ class Qwen3OmniPlacementPolicy:
             self._validate_colocated_qwen_runtime(stage_map)
             return
 
-        for thinker in plan.instances_of("thinker"):
-            for talker in plan.instances_of("talker_ar"):
+        thinkers = plan.instances_of("thinker")
+        talkers = plan.instances_of("talker_ar")
+        has_replicated_ar_stage = len(thinkers) > 1 or len(talkers) > 1
+        for thinker in thinkers:
+            for talker in talkers:
+                if not has_replicated_ar_stage and (
+                    thinker.tp_size != 1 or talker.tp_size != 1
+                ):
+                    continue
                 if not set(thinker.gpu_ids).intersection(talker.gpu_ids):
                     continue
                 raise ValueError(

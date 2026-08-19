@@ -468,6 +468,35 @@ def _qwen_speech_replica_config(talker_devices: list[int]) -> PipelineConfig:
 
 
 class TestQwenReplicaPlacementPolicy:
+    def test_accepts_single_talker_overlapping_thinker_tp_rank(self):
+        from sglang_omni.config.placement import StagePlacement, StagePlacementPlan
+        from sglang_omni.models.qwen3_omni.placement import Qwen3OmniPlacementPolicy
+
+        config = _config(
+            [
+                _stage(name)
+                for name in (
+                    "preprocessing",
+                    "image_encoder",
+                    "audio_encoder",
+                    "mm_aggregate",
+                    "thinker",
+                    "decode",
+                    "talker_ar",
+                    "code2wav",
+                )
+            ]
+        )
+        plan = StagePlacementPlan(
+            stages={
+                "thinker": StagePlacement("thinker", (0, 1), 2, None),
+                "talker_ar": StagePlacement("talker_ar", (1,), 1, None),
+            },
+            gpus={},
+        )
+
+        Qwen3OmniPlacementPolicy().validate(config, plan)
+
     def test_rejects_talker_replica_overlapping_thinker_tp_rank(self):
         config = _qwen_speech_replica_config([1, 2])
 
