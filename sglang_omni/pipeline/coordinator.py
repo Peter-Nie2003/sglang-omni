@@ -412,9 +412,6 @@ class Coordinator:
         if self._request_id_is_reserved(request_id):
             raise ValueError(f"Request {request_id} already exists")
 
-        if self.entry_stage not in self._stages:
-            raise ValueError(f"Entry stage {self.entry_stage} not registered")
-
         if self.max_in_flight is not None and len(self._requests) >= self.max_in_flight:
             logger.warning(
                 "Rejecting request %s before pipeline submit: in-flight cap "
@@ -436,6 +433,8 @@ class Coordinator:
             if self._replica_topology.is_replicated(self.entry_stage)
             else self.entry_stage
         )
+        if entry_instance not in self._stages:
+            raise ValueError(f"Entry stage {entry_instance} not registered")
         entry_info = self._stages[entry_instance]
 
         # Track request
