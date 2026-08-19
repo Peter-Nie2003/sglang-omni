@@ -358,6 +358,32 @@ class TestBinding:
         assert [b["postprocess"] for b in bindings] == [0, 1, 2, 0, 1, 2]
         assert [b["thinker"] for b in bindings] == [0, 1, 0, 1, 0, 1]
 
+    def test_equal_count_stream_processes_advance_in_lockstep(self):
+        config = _config(
+            [
+                _stage(
+                    "talker_ar",
+                    terminal=False,
+                    next="code2wav",
+                    stream_to=["code2wav"],
+                    process="talker",
+                ),
+                _stage("code2wav", process="codec"),
+            ],
+            processes={
+                "talker": ProcessConfig(num_replicas=2),
+                "codec": ProcessConfig(num_replicas=2),
+            },
+        )
+        plan, _ = compile_logical_processes(config)
+        policy = RoundRobinBindingPolicy()
+
+        bindings = [assign_replica_bindings(plan, policy, f"req{i}") for i in range(6)]
+
+        assert [
+            (binding["talker_ar"], binding["code2wav"]) for binding in bindings
+        ] == [(0, 0), (1, 1), (0, 0), (1, 1), (0, 0), (1, 1)]
+
     def test_unreplicated_plan_binds_none(self):
         assert (
             assign_replica_bindings(self._plan(), RoundRobinBindingPolicy(), "r")

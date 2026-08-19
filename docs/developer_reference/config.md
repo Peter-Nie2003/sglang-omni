@@ -197,7 +197,12 @@ disables that requirement for all colocation, including sharing introduced by
 
 At admission the coordinator picks one replica per replicated Process and
 projects that index onto the Process's member stages, so members always agree
-and different processes choose independently.
+and different processes choose independently. The default round-robin policy
+advances every replicated Process once per admission, so Processes with equal
+replica counts stay index-aligned. Unequal counts are legal, but their selected
+indices periodically diverge; stream-connected stages may then route across
+GPUs through the relay even when equal-index replicas are placed on the same
+GPU. Use equal counts when a topology relies on same-index, same-GPU pairing.
 
 ## Runtime Prep and Runner
 
