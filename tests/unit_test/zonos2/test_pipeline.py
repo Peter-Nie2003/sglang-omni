@@ -6,9 +6,7 @@ import pytest
 import torch
 
 from sglang_omni.client import Client
-from sglang_omni.config import (
-    resolve_stage_factory_args,
-)
+from sglang_omni.config import resolve_stage_factory_args
 from sglang_omni.models.zonos2 import callbacks
 from sglang_omni.models.zonos2 import engine_builder as eb
 from sglang_omni.models.zonos2.components import text_frontend

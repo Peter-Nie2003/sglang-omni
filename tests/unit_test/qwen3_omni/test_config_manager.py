@@ -6,10 +6,7 @@ from pathlib import Path
 import pytest
 
 from sglang_omni.cli.serve import apply_encoder_mem_reserve_cli_override
-from sglang_omni.config import (
-    build_stage_placement_plan,
-    resolve_stage_factory_args,
-)
+from sglang_omni.config import build_stage_placement_plan, resolve_stage_factory_args
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniPipelineConfig,

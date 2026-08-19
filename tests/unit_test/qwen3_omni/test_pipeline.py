@@ -17,11 +17,7 @@ from sglang_omni.cli.serve import (
     apply_mem_fraction_cli_overrides,
     apply_parallelism_cli_overrides,
 )
-from sglang_omni.config import (
-    PipelineConfig,
-    StageConfig,
-    resolve_stage_factory_args,
-)
+from sglang_omni.config import PipelineConfig, StageConfig, resolve_stage_factory_args
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.ming_omni.config import (
     MingOmniPipelineConfig,
