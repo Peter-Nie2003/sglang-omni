@@ -333,8 +333,7 @@ def _validate_process_name_uniqueness(plan: ProcessTopologyPlan) -> None:
     collisions = sorted(non_tp_processes.intersection(tp_processes))
     if collisions:
         raise ValueError(
-            "TP-derived process names collide with non-TP process groups: "
-            f"{collisions}"
+            f"TP-derived process names collide with non-TP process groups: {collisions}"
         )
 
 
@@ -399,17 +398,27 @@ def _validate_gpu_process_colocation(
     stage_by_name = {stage.name: stage for stage in stages}
     gpu_processes: dict[int, set[str]] = defaultdict(set)
     missing_fraction: dict[int, set[str]] = defaultdict(set)
-    replica_instance_names = {
-        instance
-        for instances in gpu_placement.replica_instances.values()
-        if len(instances) > 1
+    logical_stage_by_name = {stage.name: stage for stage in config.stages}
+    instance_to_logical = {
+        instance: logical
+        for logical, instances in gpu_placement.replica_instances.items()
         for instance in instances
     }
+    replica_device_stage_names = set()
+    for stage in stages:
+        logical_name = instance_to_logical.get(stage.name, stage.name)
+        logical_stage = logical_stage_by_name.get(logical_name)
+        if logical_stage is None:
+            continue
+        process_name = stage_process_name(logical_stage)
+        process_config = config.processes.get(process_name)
+        if process_config is not None and process_config.replica_devices is not None:
+            replica_device_stage_names.add(stage.name)
     replica_gpus: set[int] = set()
 
     def record(gpu_id: int, process_name: str, stage: StageConfig) -> None:
         gpu_processes[gpu_id].add(process_name)
-        if stage.name in replica_instance_names:
+        if stage.name in replica_device_stage_names:
             replica_gpus.add(gpu_id)
         if stage.runtime.resources.total_gpu_memory_fraction is None:
             missing_fraction[gpu_id].add(stage.name)

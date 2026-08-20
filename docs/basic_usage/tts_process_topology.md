@@ -119,10 +119,12 @@ which is what a shared process name expresses.
 When multiple processes share one GPU, all affected GPU stages must declare
 compatible `runtime.resources.total_gpu_memory_fraction` values, and their total
 must fit the placement limit. A model may opt out of that requirement with
-`require_memory_fraction_for_colocation: false`, including for sharing introduced
-by `replica_devices`. Explicitly configured fractions still count toward the
-placement limit. Fractions must be declared directly on the stages; compiling a
-process topology does not infer or rewrite them.
+`require_memory_fraction_for_colocation: false` only when the sharing is declared
+entirely by `StageConfig.gpu`. Final placement from `replica_devices` always
+requires fractions, including with `num_replicas: 1`. Explicitly configured
+fractions still count toward the placement limit. Fractions must be declared
+directly on the stages; compiling a process topology does not infer or rewrite
+them.
 
 These fractions are placement-accounting declarations, not proof of an
 allocator-enforced runtime limit. A factory receives

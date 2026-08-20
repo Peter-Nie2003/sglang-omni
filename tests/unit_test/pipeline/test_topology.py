@@ -726,6 +726,25 @@ def test_replica_induced_gpu_sharing_requires_memory_fractions_despite_opt_out()
         _compiled_topology(config)
 
 
+def test_single_replica_device_sharing_requires_memory_fractions_despite_opt_out() -> (
+    None
+):
+    from sglang_omni.config import PlacementConfig
+
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage("a", gpu=1, process="p0", next_stage="b"),
+            _stage("b", gpu=0, process="p1", terminal=True),
+        ],
+        processes={"p0": ProcessConfig(num_replicas=1, replica_devices=[0])},
+        placement=PlacementConfig(require_memory_fraction_for_colocation=False),
+    )
+
+    with pytest.raises(ValueError, match="replica-induced GPU sharing"):
+        _compiled_topology(config)
+
+
 def test_replica_induced_gpu_sharing_accepts_declared_fractions() -> None:
     from sglang_omni.config import PlacementConfig
 

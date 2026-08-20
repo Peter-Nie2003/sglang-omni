@@ -191,9 +191,10 @@ Because a replicated process resolves its devices here rather than from
 When `require_memory_fraction_for_colocation` is `true`, every GPU shared by
 multiple process groups requires explicit
 `runtime.resources.total_gpu_memory_fraction` values. Setting it to `false`
-disables that requirement for all colocation, including sharing introduced by
-`replica_devices`. Fractions that are provided still count toward
-`max_total_gpu_memory_fraction_per_gpu`.
+disables that requirement only for colocation declared by `StageConfig.gpu`.
+Sharing involving final placement from `replica_devices` always requires
+fractions, including when `num_replicas: 1`. Fractions that are provided still
+count toward `max_total_gpu_memory_fraction_per_gpu`.
 
 At admission the coordinator picks one replica per replicated Process and
 projects that index onto the Process's member stages, so members always agree
