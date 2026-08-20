@@ -101,6 +101,7 @@ class ConfigManager:
 
         # validate the configuration
         merged_config = config_cls(**cfg_copy)
+        _validate_dotted_gpu_override_conflicts(merged_config, set(extra_args))
         return merged_config
 
     @staticmethod
@@ -227,6 +228,34 @@ def _sync_stage_parallelism_aliases(
             stage["parallelism"] = parallelism
         else:
             stage["tp_size"] = stage["parallelism"]["tp"]
+
+
+def _validate_dotted_gpu_override_conflicts(
+    config: PipelineConfig,
+    override_keys: set[str],
+) -> None:
+    """Reject stage GPU overrides shadowed by process replica placement."""
+    for key in sorted(override_keys):
+        parts = key.split(".")
+        if len(parts) != 3 or parts[0] != "stages" or parts[2] != "gpu":
+            continue
+
+        stage_ref = parts[1]
+        stage_index = _resolve_list_index(
+            [stage.model_dump() for stage in config.stages],
+            stage_ref,
+        )
+        stage = config.stages[stage_index]
+        process_name = stage.process or stage.name
+        process_config = config.processes.get(process_name)
+        if process_config is None or process_config.replica_devices is None:
+            continue
+
+        raise ValueError(
+            f"{key} cannot override GPU placement for stage {stage.name!r} "
+            f"because process {process_name!r} declares replica_devices; update "
+            f"processes.{process_name}.replica_devices instead"
+        )
 
 
 def _resolve_list_index(items: list[Any], key: str) -> int:

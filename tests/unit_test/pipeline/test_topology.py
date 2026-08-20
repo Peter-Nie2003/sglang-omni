@@ -112,6 +112,39 @@ def test_stage_process_parses_from_schema_and_dotted_overrides() -> None:
     assert _process_names(merged) == ["p0", "p1"]
 
 
+@pytest.mark.parametrize("stage_ref", ["0", "a"])
+def test_config_manager_rejects_dotted_gpu_override_with_replica_devices(
+    stage_ref: str,
+) -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[_stage("a", gpu=0, process="p0", terminal=True)],
+        processes={
+            "p0": ProcessConfig(
+                num_replicas=1,
+                replica_devices=[1],
+            )
+        },
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="stages.*gpu.*process 'p0' declares replica_devices",
+    ):
+        ConfigManager(config).merge_config({f"stages.{stage_ref}.gpu": 2})
+
+
+def test_config_manager_allows_dotted_gpu_override_without_replica_devices() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[_stage("a", gpu=0, process="p0", terminal=True)],
+    )
+
+    merged = ConfigManager(config).merge_config({"stages.a.gpu": 2})
+
+    assert merged.stages[0].gpu == 2
+
+
 def test_shared_process_name_groups_stages_in_declaration_order() -> None:
     config = PipelineConfig(
         model_path="dummy",
