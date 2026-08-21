@@ -71,6 +71,7 @@ that tensor parallelism creates by putting a TP stage in its own process.
 | Qwen3-TTS | `preprocessing -> tts_engine` — prepared requests live in `_PREPROCESSING_CONTEXT` / `_PREPARED_REQUESTS`, read in-process by the AR engine builder |
 | MOSS-TTS Delay | `preprocessing -> tts_engine` — same process-local `PreparedRequestQueue` handoff |
 | Audar-TTS | — |
+| Fun-CosyVoice3 | `preprocessing -> tts_engine` — prepared requests live in `_PREPROCESSING_CONTEXT` / `_PREPARED_REQUESTS`, read in-process by the AR engine builder |
 | Zonos2 | — |
 
 Higgs-TTS already groups `preprocessing` and `audio_encoder` in a
